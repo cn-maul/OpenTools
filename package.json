@@ -1,0 +1,27 @@
+{
+  "name": "opentools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "go tool mygo dev",
+    "build": "go tool mygo build",
+    "generate": "go tool mygo generate",
+    "dev:web": "vite",
+    "build:web": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource-variable/instrument-sans": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource-variable/noto-sans-sc": "^5.3.1",
+    "mygo-runtime": "0.6.4",
+    "vue": "^3.5.44"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.10",
+    "mygo-cli": "0.6.4",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.5",
+    "vue-tsc": "^3.3.13"
+  }
+}

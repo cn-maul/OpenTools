@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+release/
+.mygo/
+data/
+*.exe
+*.db
+*.db-shm
+*.db-wal
+*.log
+uitest/
