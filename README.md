@@ -1,93 +1,67 @@
 # OpenTools
 
-OpenTools is a Go desktop shell and package manager for downloadable tools. The
-interface is Vue 3 rendered in a MyGo WebView, and the desktop app and CLI run
-through the same application service.
+OpenTools 是一个用 Go 编写的桌面工具框架和插件管理器。界面使用 Vue 3，通过 MyGo WebView 渲染；桌面应用和 CLI 共享同一套应用服务。
 
-The desktop window uses a custom-drawn title bar with visible minimize,
-maximize/restore and close controls. The host version is shown beside the app
-name; each tool also carries its own version in the tool header and form.
+桌面窗口使用自绘标题栏，包含最小化、最大化/还原和关闭按钮。主程序版本号显示在应用名旁边；每个工具在自己的标题栏中带有独立版本号。
 
-The core does not bundle business tools. A downloaded tool is an independent
-executable discovered from the user's plugin directory; installing or removing
-a tool takes effect without rebuilding the host.
+核心不内置任何业务工具。下载安装的工具是独立的可执行文件，宿主从插件目录发现它们；安装或卸载工具不需要重新编译宿主。
 
-## Architecture
+## 架构
 
 ```text
 MyGo / CLI
-    -> internal/application      use cases, no GUI or database packages
-        -> internal/catalog      installed tool registry
-        -> internal/plugins      package store and JSON-RPC process adapter
-        -> internal/tasks        detached jobs, cancellation, event stream
-            -> tasks.Store       persistence interface
+    -> internal/application      用例层，不依赖 GUI 或数据库包
+        -> internal/catalog      已安装工具注册表
+        -> internal/plugins      工具商店与 JSON-RPC 进程适配器
+        -> internal/tasks        后台任务、取消、事件流
+            -> tasks.Store       持久化接口
                 -> SQLite
-    -> pkg/tool                  standard-library-only tool contract
-        -> pkg/tool/pluginproto  versioned JSON-RPC 2.0 process protocol
-    -> tools/*                   source for independently built plugin binaries
+    -> pkg/tool                  仅依赖标准库的工具契约
+        -> pkg/tool/pluginproto  带版本号的 JSON-RPC 2.0 进程协议
+    -> tools/*                   独立编译的插件二进制源码
 ```
 
-Important boundaries:
+关键边界：
 
-- `pkg/tool` never imports Vue, MyGo, SQLite, or application state.
-- `internal/appkit` never imports a business tool package. It scans the plugin
-  directory and registers lightweight process adapters.
-- `internal/application` is shared by the desktop and CLI adapters.
-- `internal/desktop` is the only package that knows about MyGo.
-- `internal/tasks` owns lifecycle and cancellation; tools only report progress
-  and observe `context.Context`.
-- Jobs outlive a window. A job is "interrupted" only when its process stops
-  refreshing the durable heartbeat, so GUI and CLI instances can safely coexist.
-- Tool results are structured blocks plus files under the job work directory.
-  The host validates artifact paths before exposing them.
-- Plugins are separate executables. The host talks to them over line-delimited
-  JSON-RPC 2.0 on stdin/stdout, so a plugin cannot import host internals or
-  replace the host's Go runtime.
+- `pkg/tool` 永远不导入 Vue、MyGo、SQLite 或应用状态。
+- `internal/appkit` 不导入任何业务工具包，只扫描插件目录并注册轻量进程适配器。
+- `internal/application` 由桌面端和 CLI 共享。
+- `internal/desktop` 是唯一知道 MyGo 的包。
+- `internal/tasks` 负责任务生命周期与取消；工具只上报进度并观察 `context.Context`。
+- 任务比窗口活得久。只有当进程停止刷新持久心跳时任务才被标记为"已中断"，因此 GUI 和 CLI 实例可以安全共存。
+- 工具结果是结构化区块加上任务工作目录下的文件；宿主在暴露产物路径前会做校验。
+- 插件是独立的可执行文件。宿主通过 stdin/stdout 上的行分隔 JSON-RPC 2.0 与其通信，插件无法导入宿主内部实现，也无法替换宿主的 Go 运行时。
 
-Each installed directory has this layout:
+每个已安装工具的目录结构：
 
 ```text
-%APPDATA%\OpenTools\plugins\<tool-id>\
+data\plugins\<tool-id>\
     manifest.json
-    <tool executable>
+    <工具可执行文件>
 ```
 
-Packages are ZIP files containing the same two files at the root. The host
-validates the schema version, protocol version, platform, tool ID, executable
-path, archive paths, and SHA256 before atomically enabling a package. A failed
-download or validation never removes the installed version.
+安装包是 ZIP 文件，根目录包含同样的两个文件。宿主会校验清单版本、协议版本、平台、工具 ID、可执行文件路径、压缩包路径和 SHA256，全部通过后原子化启用新包。下载或校验失败不会影响已安装的旧版本。
 
-## Plugin protocol
+## 插件协议
 
-Launch the executable with `describe` to print its definition, or with `rpc` to
-serve JSON-RPC on stdio. The host sends `initialize`, then `tool/run`. Plugins
-may emit `tool/log` and `tool/progress` notifications before the final result.
-Cancellation terminates the child process, so tools cannot leave orphan work
-behind when a job is canceled.
+以 `describe` 参数启动可执行文件会打印工具定义；以 `rpc` 参数启动则在标准输入输出上提供 JSON-RPC 服务。宿主先发送 `initialize`，再发送 `tool/run`。插件可以在最终结果之前发送 `tool/log` 和 `tool/progress` 通知。取消任务会终止子进程，因此工具不会在取消后留下孤儿进程。
 
-## Adding a downloadable tool
+## 开发一个可下载工具
 
-1. Create `tools/<name>/tool.go` and implement `tool.Tool`.
-2. Give it a stable ID and declare all externally visible effects.
-3. Validate `ctx` before and during expensive or side-effecting work.
-4. Return a non-empty summary and only the supported result block kinds.
-5. Add a `pluginproto.Serve(tool)` executable under `cmd/plugins/<name>`.
-6. Publish a ZIP containing `manifest.json` and the executable, then add its
-   SHA256 and relative download URL to `store/catalog.json`.
+1. 创建 `tools/<name>/tool.go` 并实现 `tool.Tool` 接口。
+2. 使用稳定的工具 ID，并声明所有对外可见的能力（effects）。
+3. 在执行耗时或有副作用的操作前后检查 `ctx`。
+4. 返回非空摘要，且只使用支持的结果区块类型。
+5. 在 `cmd/plugins/<name>` 下添加 `pluginproto.Serve(tool)` 可执行入口。
+6. 发布包含 `manifest.json` 和可执行文件的 ZIP，然后将其 SHA256 和相对下载地址写入 `store/catalog.json`。
 
-`build.ps1` currently builds the two reference plugins and writes a complete
-local store into the release folder. That folder can be served by any static
-HTTP server, or used directly while developing.
+`build.ps1` 会构建全部插件并在输出目录生成完整的本地商店。该目录可以由任意静态 HTTP 服务器托管，开发时也可以直接使用。
 
-Input schemas intentionally support a small JSON Schema subset: objects,
-strings, numbers, integers, booleans, arrays, defaults, enums, bounds, and UI
-hints. This keeps form generation and CLI parsing deterministic; a tool can
-decode richer values itself if a future schema extension is needed.
+输入 Schema 有意只支持 JSON Schema 的一个小子集：对象、字符串、数字、整数、布尔、数组、默认值、枚举、取值范围和 UI 提示。这保证了表单生成和 CLI 解析的确定性；将来如果扩展 Schema，工具也可以自行解码更复杂的值。
 
-## Development
+## 开发
 
-Prerequisites: Go 1.27+, Node.js 22+, and the platform dependencies required
-by MyGo.
+环境要求：Go 1.27+、Node.js 22+，以及 MyGo 所需的平台依赖。
 
 ```powershell
 npm install
@@ -99,27 +73,17 @@ go vet ./...
 go tool mygo build -platform windows/amd64
 ```
 
-Run the desktop app with `go tool mygo dev` or the produced executable.
+使用 `go tool mygo dev` 或编译出的可执行文件运行桌面应用。
 
-For a release snapshot, use PowerShell 7 (the build script itself is `pwsh`).
-The produced application runs on ordinary Windows PowerShell 5.1 and does not
-require PowerShell 7.
+发布构建请使用 PowerShell 7（构建脚本本身是 `pwsh`）。构建出的应用在系统自带的 Windows PowerShell 5.1 上即可运行，不要求安装 PowerShell 7。
 
 ```powershell
 ./build.ps1
 ```
 
-The script runs checks, builds the core and plugin executables, creates plugin
-ZIPs plus `store/catalog.json`, then copies the core and installer into a new
-timestamped folder under
-`release/<platform>-<version>/`, for example
-`release/windows-amd64-0.2.0/20261026-144034/`. `BUILD.txt` records the
-platform, build time, and executable SHA256. Use `-SkipChecks` while iterating
-and `-Platform` to select another target. Add `-ExeOnly` to produce a clean
-folder containing only the executable and `BUILD.txt`, without the installer.
+脚本会执行检查、编译核心与全部插件、生成插件 ZIP 和 `store/catalog.json`，然后把核心程序和安装包复制到 `release/<platform>-<version>/` 下带时间戳的新目录。`BUILD.txt` 记录平台、构建时间和可执行文件 SHA256。迭代时可用 `-SkipChecks` 跳过检查，用 `-Platform` 选择其他目标平台。
 
-The core `OpenTools.exe` contains no business tools. The reference plugins are
-in `store/packages/` and are installed on demand.
+核心 `OpenTools.exe` 不包含业务工具。参考插件位于 `store/packages/`，按需下载安装。
 
 ## CLI
 
@@ -127,62 +91,33 @@ in `store/packages/` and are installed on demand.
 go run ./cmd/opentools list
 go run ./cmd/opentools store --refresh
 go run ./cmd/opentools install system.inventory
-go run ./cmd/opentools run system.inventory --scope hardware --json
+go run ./cmd/opentools run system.inventory --json
 go run ./cmd/opentools uninstall system.inventory
 go run ./cmd/opentools jobs --limit 10
 go run ./cmd/opentools job <job-id>
 ```
 
-Data defaults to `%APPDATA%\OpenTools` on Windows. Set `OPENTOOLS_DATA_DIR` to
-use a portable or test directory. CLI output is script-friendly; add `--json`
-to print the final job snapshot.
+数据目录默认是 exe 旁边的 `data` 文件夹（便携模式）；该目录不可写时回退到用户配置目录。设置 `OPENTOOLS_DATA_DIR` 可指定任意便携或测试目录。CLI 输出对脚本友好，加 `--json` 可打印最终任务快照。
 
-## Network and DNS
+## 网络与 DNS
 
-The downloadable `network.dns-switcher` plugin manages the IPv4 and DNS settings
-of the primary Windows adapter. It runs through the inbox Windows PowerShell 5.1 and
-supports:
+可下载插件 `network.dns-switcher` 管理 Windows 主网卡的 IPv4 与 DNS 设置。它通过系统自带的 Windows PowerShell 5.1 运行，支持：
 
-- detecting the primary adapter while excluding virtual adapters, disconnected
-  links, and APIPA addresses;
-- ranking candidates by physical link, usable IPv4, default route, Internet
-  connectivity, and route/interface metric; ambiguous equal-priority candidates
-  are reported instead of being selected silently;
-- backing up DHCP mode, IPv4 addresses and prefixes, default gateways, automatic
-  and explicit interface metrics, default-route metrics, and DNS mode/addresses;
-- benchmarking nine public DNS providers with direct UDP queries, ranked by
-  successes, median RTT, and jitter;
-- switching DNS with a fresh automatic backup and a confirmation prompt;
-- restoring a backup only after checking the adapter GUID and MAC address, with
-  post-operation verification and automatic rollback on failure.
+- 识别主网卡，排除虚拟网卡、断开链路和 APIPA 地址；
+- 按物理链路、可用 IPv4、默认路由、Internet 连通性和路由/接口跃点排序候选网卡；优先级相同的歧义候选会被报告而不是被静默选择；
+- 备份 DHCP 模式、IPv4 地址与前缀、默认网关、自动/显式接口跃点、默认路由跃点以及 DNS 模式和地址；
+- 通过直连 UDP 查询测速 9 个公共 DNS 服务，按成功数、中位 RTT 和抖动排序；
+- 切换 DNS 前自动做一次全新备份并弹出确认提示；
+- 恢复备份前核对网卡 GUID 和 MAC 地址，操作后验证并在失败时自动回滚。
 
-Backups use schema version 2 and live in
-`%APPDATA%\OpenTools\network\backups`, or the equivalent
-`OPENTOOLS_DATA_DIR\network\backups`. Older schema version 1 backups remain
-readable. Switching DNS or restoring a backup asks for UAC approval in a
-separate, hidden Windows PowerShell 5.1 process. The restore scope is IPv4 and
-DNS for the selected physical adapter; IPv6, Wi-Fi credentials, proxy settings,
-and Windows Firewall rules are not modified.
+备份使用 Schema 版本 2，存放在数据目录的 `network\backups` 下；旧版版本 1 备份仍可读取。切换 DNS 或恢复备份会在单独的隐藏 Windows PowerShell 5.1 进程中请求 UAC 授权。恢复范围仅限所选物理网卡的 IPv4 和 DNS；IPv6、Wi-Fi 凭据、代理设置和 Windows 防火墙规则不会被修改。
 
-## System configuration
+## 系统配置
 
-The `system.inventory` tool is a read-only local inventory. It reports the
-computer and motherboard, firmware and boot mode, CPU, memory modules, active
-display adapters, physical disks and volumes, connected network adapters,
-operating-system uptime, battery presence, and security state (Secure Boot,
-TPM, Defender, firewall, BitLocker, and hardware virtualization). It writes a
-dated JSON report into the job's artifact directory.
+`system.inventory` 工具是只读的本机配置检测。报告内容包括计算机与主板、固件与启动模式、CPU、内存条、活动显示适配器、物理磁盘与卷、已连接的网络适配器、操作系统运行时长、电池，以及安全状态（安全启动、TPM、Defender、防火墙、BitLocker 和硬件虚拟化）。
 
-Windows collection uses the inbox Windows PowerShell 5.1, not PowerShell 7.
-The tool owns its platform adapter and does not share runtime code with the
-network tool, so either tool can be moved to a downloadable plugin package
-without breaking the other.
+Windows 数据采集使用系统自带的 PowerShell 5.1，不依赖 PowerShell 7。该工具拥有自己的平台适配器，不与网络工具共享运行时代码，因此任何一个工具都可以独立做成下载插件而不影响另一个。
 
-## Plugin sources
+## 工具商店来源
 
-By default the host discovers `store/catalog.json` beside the executable. Open
-**设置** in the left rail to use one or more semicolon-separated catalog URLs
-(HTTP, HTTPS, or file paths). The setting is stored in
-`%APPDATA%\OpenTools\plugin-sources.json` and can be cleared to restore local
-discovery. `OPENTOOLS_CATALOG_URL` remains available as a portable fallback.
-Installed tools stay usable when every catalog is unreachable.
+默认情况下宿主会在 exe 旁边的 `store/catalog.json` 发现目录。打开左侧栏的**设置**可以配置一个或多个用英文分号分隔的目录地址（HTTP、HTTPS 或本地文件路径）。该设置保存在数据目录的 `plugin-sources.json` 中，清空即可恢复本地发现。`OPENTOOLS_CATALOG_URL` 环境变量仍然可用作便携回退。所有目录都不可达时，已安装的工具照常可用。
