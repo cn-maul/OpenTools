@@ -20,6 +20,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $OutputEncoding
 
 $root = $PSScriptRoot
 $configVersion = (
@@ -101,7 +103,8 @@ Invoke-Checked {
     foreach ($plugin in @(
         @{ Name = "networkconfig"; Output = "network-config" },
         @{ Name = "laninventory"; Output = "lan-inventory" },
-        @{ Name = "systemconfig"; Output = "system-inventory" }
+        @{ Name = "systemconfig"; Output = "system-inventory" },
+        @{ Name = "printercheck"; Output = "printer-check" }
     )) {
         $env:GOOS = $goos
         $env:GOARCH = $goarch
@@ -149,7 +152,14 @@ $pluginSpecs = @(
     @{
         Name = "system-inventory"
         Executable = "system-inventory.exe"
-        Package = "system-inventory-1.2.0.zip"
+        Package = "system-inventory-1.3.0.zip"
+        Author = "OpenTools"
+        Homepage = "https://github.com/"
+    },
+    @{
+        Name = "printer-check"
+        Executable = "printer-check.exe"
+        Package = "printer-check-1.0.0.zip"
         Author = "OpenTools"
         Homepage = "https://github.com/"
     }

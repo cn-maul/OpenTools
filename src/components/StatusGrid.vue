@@ -5,6 +5,7 @@ const props = defineProps<{
   cells: StatusCell[];
   legend?: StatusLegendItem[];
   label?: string;
+  labeled?: boolean;
 }>();
 
 function toneClass(tone?: Tone) {
@@ -42,14 +43,19 @@ function cellTip(cell: StatusCell) {
         {{ item.label }}
       </span>
     </div>
-    <div class="status-grid__cells">
+    <div class="status-grid__cells" :class="{ 'status-grid__cells--labeled': props.labeled }">
       <span
         v-for="(cell, index) in props.cells"
         :key="`${cell.label}-${index}`"
         class="status-grid__cell"
         :class="[toneClass(cell.tone), categoryClass(cell)]"
         :title="cellTip(cell)"
-      />
+      >
+        <template v-if="props.labeled">
+          <span class="status-grid__cell-label">{{ cell.label }}</span>
+          <span v-if="cell.detail" class="status-grid__cell-detail">{{ cell.detail }}</span>
+        </template>
+      </span>
     </div>
   </div>
 </template>

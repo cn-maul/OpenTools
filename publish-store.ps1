@@ -25,6 +25,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $OutputEncoding
 
 $root = $PSScriptRoot
 $outDir = Join-Path $root "store"
@@ -69,7 +71,8 @@ if (-not $SkipBuild) {
         foreach ($plugin in @(
             @{ Name = "networkconfig"; Output = "network-config" },
             @{ Name = "laninventory"; Output = "lan-inventory" },
-            @{ Name = "systemconfig"; Output = "system-inventory" }
+            @{ Name = "systemconfig"; Output = "system-inventory" },
+            @{ Name = "printercheck"; Output = "printer-check" }
         )) {
             $env:GOOS = $goos
             $env:GOARCH = $goarch
@@ -89,7 +92,8 @@ New-Item -ItemType Directory -Path $packagesDir -Force | Out-Null
 $toolSpecs = @(
     @{ Name = "network-config"; Executable = "network-config.exe" },
     @{ Name = "lan-inventory"; Executable = "lan-inventory.exe" },
-    @{ Name = "system-inventory"; Executable = "system-inventory.exe" }
+    @{ Name = "system-inventory"; Executable = "system-inventory.exe" },
+    @{ Name = "printer-check"; Executable = "printer-check.exe" }
 )
 $catalogTools = @()
 Add-Type -AssemblyName System.IO.Compression
@@ -100,7 +104,7 @@ foreach ($spec in $toolSpecs) {
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
         throw "Plugin executable missing: $source (build first or drop -SkipBuild)"
     }
-    $description = & $source describe | ConvertFrom-Json
+    $description = (& $source describe) | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0) {
         throw "Plugin describe failed: $($spec.Name)"
     }
@@ -243,7 +247,7 @@ Write-Host "`nPublishing to gitee.com/$GiteeRepo ($Branch)" -ForegroundColor Cya
 Publish-GiteeFile -Repo $GiteeRepo -Token $GiteeToken -Branch $Branch `
     -Path "catalog.json" -LocalFile $catalogPath -Message "publish catalog"
 foreach ($spec in $toolSpecs) {
-    $description = & (Join-Path $pluginRoot $spec.Executable) describe | ConvertFrom-Json
+    $description = (& (Join-Path $pluginRoot $spec.Executable) describe) | ConvertFrom-Json
     $packageName = "$($spec.Name)-$($description.version).zip"
     Publish-GiteeFile -Repo $GiteeRepo -Token $GiteeToken -Branch $Branch `
         -Path "packages/$packageName" -LocalFile (Join-Path $packagesDir $packageName) `

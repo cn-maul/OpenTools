@@ -98,6 +98,11 @@ function gridLegend(block: Block) {
   return Array.isArray(data?.legend) ? (data.legend as StatusLegendItem[]) : [];
 }
 
+function gridLabeled(block: Block) {
+  const data = block.data as { labeled?: unknown } | undefined;
+  return data?.labeled === true;
+}
+
 function meterItems(block: Block) {
   const data = block.data as { items?: unknown } | undefined;
   return Array.isArray(data?.items) ? (data.items as MeterItem[]) : [];
@@ -271,6 +276,7 @@ watch(
                   :cells="gridCells(block)"
                   :legend="gridLegend(block)"
                   :label="block.title || section.title"
+                  :labeled="gridLabeled(block)"
                 />
                 <MetricView
                   v-else-if="block.kind === 'meter'"
@@ -361,6 +367,7 @@ watch(
             :cells="gridCells(block)"
             :legend="gridLegend(block)"
             :label="block.title || '状态网格'"
+            :labeled="gridLabeled(block)"
           />
 
           <MetricView

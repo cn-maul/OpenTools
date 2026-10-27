@@ -1408,6 +1408,10 @@ button {
   grid-column: 1 / -1;
 }
 
+.result-content--stacked .result-stream-item:has(.status-grid__cells--labeled) {
+  grid-column: 1 / -1;
+}
+
 .result-content--stacked .result-stream-head {
   position: static;
   margin: 0 0 11px;
@@ -1728,6 +1732,11 @@ button {
   gap: 4px;
 }
 
+.status-grid__cells--labeled {
+  grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
+  gap: 8px;
+}
+
 .status-grid__cell {
   display: block;
   width: 100%;
@@ -1736,6 +1745,60 @@ button {
   background: var(--surface-tertiary);
   border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
   transition: box-shadow 120ms ease;
+}
+
+.status-grid__cells--labeled .status-grid__cell {
+  display: flex;
+  min-height: 72px;
+  aspect-ratio: auto;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 7px;
+  border: 1px solid color-mix(in oklab, currentColor 14%, var(--border));
+  border-radius: 12px;
+  padding: 10px 11px;
+}
+
+.status-grid__cells--labeled .status-grid__cell--success {
+  background: color-mix(in oklab, var(--success) 12%, var(--surface));
+  color: color-mix(in oklab, var(--success) 70%, var(--foreground));
+}
+
+.status-grid__cells--labeled .status-grid__cell--warning {
+  background: color-mix(in oklab, var(--warning) 15%, var(--surface));
+  color: color-mix(in oklab, var(--warning) 62%, var(--foreground));
+}
+
+.status-grid__cells--labeled .status-grid__cell--danger {
+  background: color-mix(in oklab, var(--danger) 11%, var(--surface));
+  color: color-mix(in oklab, var(--danger) 72%, var(--foreground));
+}
+
+.status-grid__cells--labeled .status-grid__cell--neutral {
+  background: color-mix(in oklab, var(--accent) 10%, var(--surface));
+  color: var(--accent-soft-foreground);
+}
+
+.status-grid__cells--labeled .status-grid__cell--muted {
+  background: var(--surface-secondary);
+  color: var(--muted);
+}
+
+.status-grid__cell-label {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 660;
+  line-height: 1.3;
+}
+
+.status-grid__cell-detail {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.42;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .status-grid__cell:hover {

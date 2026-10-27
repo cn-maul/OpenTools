@@ -118,6 +118,21 @@ go run ./cmd/opentools job <job-id>
 
 Windows 数据采集使用系统自带的 PowerShell 5.1，不依赖 PowerShell 7。该工具拥有自己的平台适配器，不与网络工具共享运行时代码，因此任何一个工具都可以独立做成下载插件而不影响另一个。
 
+## 打印机检测
+
+`hardware.printers` 是只读的打印机与打印驱动检查工具。它分别采集 Windows 打印后台处理程序、打印管理接口、WMI、用户打印机注册表、打印驱动注册表、打印端口和 PnP 设备，因此某个接口不可用时不会连带隐藏其他信息。即使 Spooler 已经停止，工具也会尽量从用户注册表列出已配置的打印机和默认打印机。
+
+检查内容包括：
+
+- 打印服务 Spooler 的运行状态和启动类型；
+- 打印机名称、默认打印机、共享名、位置、离线状态与驱动名称；
+- 驱动是否在系统中注册，以及可读取时驱动文件是否仍然存在；
+- 打印端口类型、主机地址、端口号和协议；
+- 打印机的 PnP 硬件状态；
+- 网络打印机 TCP 端口的短超时可达性检查。
+
+工具不会启动或停止打印服务，不会安装、更新或删除驱动，也不会修改任何打印机设置。网络探测只连接打印机的标准端口，超时固定且不会进行端口扫描。停服或权限限制导致无法验证的驱动会显示为“无法验证”，不会误报成“驱动缺失”。
+
 ## 工具商店来源
 
 宿主按以下顺序确定目录来源：
@@ -139,7 +154,8 @@ Windows 数据采集使用系统自带的 PowerShell 5.1，不依赖 PowerShell 
 catalog.json
 packages\network-config-1.2.0.zip
 packages\lan-inventory-1.3.0.zip
-packages\system-inventory-1.2.0.zip
+packages\system-inventory-1.3.0.zip
+packages\printer-check-1.0.0.zip
 ```
 
 `catalog.json` 里的 `downloadUrl` 用**相对路径**，宿主会相对目录地址解析；`sha256` 由发布脚本自动计算。

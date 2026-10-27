@@ -30,5 +30,11 @@ defineProps<{
     <rect x="9.5" y="4.5" width="5" height="5" rx="1" />
     <path d="M12 9.5v2.7m-6.5 2.3v-2.3h13v2.3" />
   </svg>
+  <svg v-else-if="icon === 'printer'" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M7 8V4.5h10V8" />
+    <rect x="3.5" y="8" width="17" height="8.5" rx="2" />
+    <path d="M7 13h10v6.5H7z" />
+    <circle cx="17.5" cy="11" r=".7" />
+  </svg>
   <span v-else class="tool-icon-fallback">{{ label.slice(0, 1).toUpperCase() }}</span>
 </template>
