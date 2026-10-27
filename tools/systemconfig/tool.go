@@ -10,7 +10,7 @@ import (
 	"opentools/pkg/tool"
 )
 
-const version = "1.2.0"
+const version = "1.3.0"
 
 // Tool reports hardware, operating system, network and security state.
 type Tool struct{}
@@ -157,31 +157,15 @@ func hardwareBlocks(state snapshot) []tool.Block {
 	computer := state.Computer
 	board := state.Board
 	blocks := []tool.Block{
-		{
-			Kind:    tool.BlockTable,
-			Title:   "设备概览",
-			Columns: []string{"项目", "信息"},
-			Rows: [][]string{
-				{"设备名称", fallback(computer.Name, "未知")},
-				{"制造商 / 型号", joinNonEmpty(" / ", computer.Manufacturer, computer.Model)},
-				{"主板", joinNonEmpty(" / ", board.Manufacturer, board.Product)},
-				{"系统类型", fallback(computer.SystemType, "未知")},
-				{"固件", joinNonEmpty(" / ", state.Firmware.Vendor, state.Firmware.Version)},
-				{"启动模式", fallback(state.Firmware.BootMode, "未知")},
-			},
-		},
-		{
-			Kind:    tool.BlockTable,
-			Title:   "处理器",
-			Columns: []string{"项目", "信息"},
-			Rows: [][]string{
-				{"型号", fallback(state.CPU.Name, "未知")},
-				{"制造商", fallback(state.CPU.Manufacturer, "未知")},
-				{"核心 / 线程", fmt.Sprintf("%d / %d", state.CPU.Cores, state.CPU.LogicalProcessors)},
-				{"最高频率", formatMHz(state.CPU.MaxClockMHz)},
-				{"当前负载", fmt.Sprintf("%d%%", state.CPU.LoadPercent)},
-			},
-		},
+		factsBlock("设备概览", []tool.Fact{
+			{Label: "设备名称", Value: fallback(computer.Name, "未知")},
+			{Label: "制造商 / 型号", Value: joinNonEmpty(" / ", computer.Manufacturer, computer.Model)},
+			{Label: "主板", Value: joinNonEmpty(" / ", board.Manufacturer, board.Product)},
+			{Label: "系统类型", Value: fallback(computer.SystemType, "未知")},
+			{Label: "固件", Value: joinNonEmpty(" / ", state.Firmware.Vendor, state.Firmware.Version)},
+			{Label: "启动模式", Value: fallback(state.Firmware.BootMode, "未知")},
+		}),
+		processorBlock(state),
 		memoryBlock(state.Memory),
 		graphicsBlock(state.Graphics),
 		diskBlock(state.Disks),
@@ -193,22 +177,17 @@ func hardwareBlocks(state snapshot) []tool.Block {
 func systemBlocks(state snapshot) []tool.Block {
 	osInfo := state.OS
 	blocks := []tool.Block{
-		{
-			Kind:    tool.BlockTable,
-			Title:   "操作系统",
-			Columns: []string{"项目", "信息"},
-			Rows: [][]string{
-				{"版本", fallback(osInfo.Caption, "未知")},
-				{"系统版本", fallback(osInfo.Version, "未知")},
-				{"Build", fallback(osInfo.Build, "未知")},
-				{"架构", fallback(osInfo.Architecture, "未知")},
-				{"安装时间", formatDate(osInfo.InstallDate)},
-				{"上次启动", formatDate(osInfo.LastBoot)},
-				{"已运行", formatDuration(time.Duration(osInfo.UptimeSeconds) * time.Second)},
-				{"时区", fallback(osInfo.TimeZone, "未知")},
-				{"当前用户", fallback(state.Computer.CurrentUser, "未知")},
-			},
-		},
+		factsBlock("操作系统", []tool.Fact{
+			{Label: "版本", Value: fallback(osInfo.Caption, "未知")},
+			{Label: "系统版本", Value: fallback(osInfo.Version, "未知")},
+			{Label: "Build", Value: fallback(osInfo.Build, "未知")},
+			{Label: "架构", Value: fallback(osInfo.Architecture, "未知")},
+			{Label: "安装时间", Value: formatDate(osInfo.InstallDate)},
+			{Label: "上次启动", Value: formatDate(osInfo.LastBoot)},
+			{Label: "已运行", Value: formatDuration(time.Duration(osInfo.UptimeSeconds) * time.Second)},
+			{Label: "时区", Value: fallback(osInfo.TimeZone, "未知")},
+			{Label: "当前用户", Value: fallback(state.Computer.CurrentUser, "未知")},
+		}),
 		networkBlock(state.Network),
 		securityBlock(state.Security),
 		batteryBlock(state.Battery),
@@ -216,112 +195,173 @@ func systemBlocks(state snapshot) []tool.Block {
 	return blocks
 }
 
-func memoryBlock(info memoryInfo) tool.Block {
-	rows := [][]string{
-		{"总容量", formatBytes(info.TotalBytes)},
-		{"当前可用", formatBytes(info.AvailableBytes)},
+func factsBlock(title string, facts []tool.Fact) tool.Block {
+	return tool.Block{
+		Kind:  tool.BlockFacts,
+		Title: title,
+		Data:  map[string]any{"items": facts},
 	}
+}
+
+// percentTone colours a load or usage meter by pressure, not by pass/fail.
+func percentTone(value float64) tool.Tone {
+	switch {
+	case value >= 90:
+		return tool.ToneDanger
+	case value >= 70:
+		return tool.ToneWarning
+	default:
+		return tool.ToneSuccess
+	}
+}
+
+func processorBlock(state snapshot) tool.Block {
+	load := float64(state.CPU.LoadPercent)
+	return tool.Block{
+		Kind:  tool.BlockMeter,
+		Title: "处理器",
+		Data: map[string]any{"items": []tool.MeterItem{
+			{
+				Label:   "当前负载",
+				Value:   load,
+				Max:     100,
+				Unit:    "%",
+				Detail:  fmt.Sprintf("%d 核 / %d 线程", state.CPU.Cores, state.CPU.LogicalProcessors),
+				Tone:    percentTone(load),
+				Variant: "ring",
+			},
+		}},
+	}
+}
+
+func memoryBlock(info memoryInfo) tool.Block {
+	used := info.TotalBytes - info.AvailableBytes
+	if info.TotalBytes <= 0 {
+		used = 0
+	}
+	percent := float64(0)
+	if info.TotalBytes > 0 {
+		percent = float64(used) * 100 / float64(info.TotalBytes)
+	}
+	items := []tool.MeterItem{
+		{
+			Label:   "内存占用",
+			Value:   percent,
+			Max:     100,
+			Unit:    "%",
+			Detail:  fmt.Sprintf("%s / %s", formatBytes(used), formatBytes(info.TotalBytes)),
+			Tone:    percentTone(percent),
+			Variant: "ring",
+		},
+	}
+	facts := make([]tool.Fact, 0, len(info.Modules))
 	for _, module := range info.Modules {
-		rows = append(rows, []string{
-			fmt.Sprintf("内存条 %s", fallback(module.Slot, "未标注插槽")),
-			fmt.Sprintf("%s · %s · %d MHz", fallback(module.Manufacturer, "未知厂商"), fallback(module.PartNumber, "未知型号"), module.SpeedMHz),
+		facts = append(facts, tool.Fact{
+			Label: fmt.Sprintf("内存条 %s", fallback(module.Slot, "未标注插槽")),
+			Value: fmt.Sprintf("%s · %s · %d MHz", fallback(module.Manufacturer, "未知厂商"), fallback(module.PartNumber, "未知型号"), module.SpeedMHz),
 		})
 	}
-	return tool.Block{Kind: tool.BlockTable, Title: "内存", Columns: []string{"项目", "信息"}, Rows: rows}
+	return tool.Block{
+		Kind:  tool.BlockMeter,
+		Title: "内存",
+		Data:  map[string]any{"items": items, "facts": facts},
+	}
 }
 
 func graphicsBlock(items []graphicsInfo) tool.Block {
-	rows := make([][]string, 0, len(items))
+	facts := make([]tool.Fact, 0, len(items))
 	for _, item := range items {
 		memory := formatBytes(item.MemoryBytes)
 		if item.MemoryBytes == 0 {
 			memory = "共享/未知"
 		}
-		rows = append(rows, []string{
-			fallback(item.Name, "未知显卡"),
-			fallback(item.Vendor, "未知厂商"),
-			memory,
-			fallback(item.DriverVersion, "未知"),
-			fallback(item.Status, "未知"),
+		facts = append(facts, tool.Fact{
+			Label: fallback(item.Name, "未知显卡"),
+			Value: fmt.Sprintf("%s · %s · 驱动 %s · %s", fallback(item.Vendor, "未知厂商"), memory, fallback(item.DriverVersion, "未知"), fallback(item.Status, "未知")),
 		})
 	}
-	if len(rows) == 0 {
-		rows = append(rows, []string{"未检测到显卡信息", "-", "-", "-", "-"})
+	if len(facts) == 0 {
+		facts = append(facts, tool.Fact{Label: "显卡", Value: "未检测到显卡信息"})
 	}
-	return tool.Block{Kind: tool.BlockTable, Title: "显卡", Columns: []string{"设备", "厂商", "显存", "驱动版本", "状态"}, Rows: rows}
+	return factsBlock("显卡", facts)
 }
 
 func diskBlock(items []diskInfo) tool.Block {
-	rows := make([][]string, 0, len(items))
+	facts := make([]tool.Fact, 0, len(items))
 	for _, item := range items {
-		rows = append(rows, []string{
-			fallback(item.Model, "未知磁盘"),
-			formatBytes(item.SizeBytes),
-			fallback(item.BusType, "未知"),
-			fallback(item.MediaType, "未知"),
-			fallback(item.Health, "未知"),
+		facts = append(facts, tool.Fact{
+			Label: fallback(item.Model, "未知磁盘"),
+			Value: fmt.Sprintf("%s · %s · %s · %s", formatBytes(item.SizeBytes), fallback(item.BusType, "未知总线"), fallback(item.MediaType, "未知介质"), fallback(item.Health, "未知健康")),
 		})
 	}
-	if len(rows) == 0 {
-		rows = append(rows, []string{"未检测到物理磁盘", "-", "-", "-", "-"})
+	if len(facts) == 0 {
+		facts = append(facts, tool.Fact{Label: "磁盘", Value: "未检测到物理磁盘"})
 	}
-	return tool.Block{Kind: tool.BlockTable, Title: "物理磁盘", Columns: []string{"型号", "容量", "总线", "介质", "健康"}, Rows: rows}
+	return factsBlock("物理磁盘", facts)
 }
 
 func volumeBlock(items []volumeInfo) tool.Block {
-	rows := make([][]string, 0, len(items))
+	metrics := make([]tool.MeterItem, 0, len(items))
 	for _, item := range items {
 		used := item.TotalBytes - item.FreeBytes
-		percent := int64(0)
+		percent := float64(0)
 		if item.TotalBytes > 0 {
-			percent = used * 100 / item.TotalBytes
+			percent = float64(used) * 100 / float64(item.TotalBytes)
 		}
-		rows = append(rows, []string{
-			fallback(item.DriveLetter, "?"),
-			fallback(item.Label, "本地磁盘"),
-			fallback(item.FileSystem, "未知"),
-			fmt.Sprintf("%s / %s（%d%% 已用）", formatBytes(used), formatBytes(item.TotalBytes), percent),
-			formatBytes(item.FreeBytes),
+		metrics = append(metrics, tool.MeterItem{
+			Label: fmt.Sprintf("%s %s", fallback(item.DriveLetter, "?"), fallback(item.Label, "本地磁盘")),
+			Value: percent,
+			Max:   100,
+			Unit:  "%",
+			Detail: fmt.Sprintf("%s / %s · 可用 %s · %s",
+				formatBytes(used), formatBytes(item.TotalBytes), formatBytes(item.FreeBytes), fallback(item.FileSystem, "未知")),
+			Tone:    percentTone(percent),
+			Variant: "bar",
 		})
 	}
-	if len(rows) == 0 {
-		rows = append(rows, []string{"-", "未检测到本地卷", "-", "-", "-"})
+	if len(metrics) == 0 {
+		return factsBlock("磁盘卷", []tool.Fact{{Label: "磁盘卷", Value: "未检测到本地卷"}})
 	}
-	return tool.Block{Kind: tool.BlockTable, Title: "磁盘卷", Columns: []string{"盘符", "卷标", "文件系统", "已用 / 容量", "可用"}, Rows: rows}
+	return tool.Block{
+		Kind:  tool.BlockMeter,
+		Title: "磁盘卷",
+		Data:  map[string]any{"items": metrics},
+	}
 }
 
 func networkBlock(items []networkInfo) tool.Block {
-	rows := make([][]string, 0, len(items))
+	facts := make([]tool.Fact, 0, len(items)*2)
 	for _, item := range items {
-		rows = append(rows, []string{
-			fallback(item.Name, "未命名"),
-			fallback(item.Type, "未知"),
-			fallback(item.LinkSpeed, "未知"),
-			strings.Join(item.IPv4, " / "),
-			strings.Join(item.DNS, " / "),
-		})
+		name := fallback(item.Name, "未命名")
+		facts = append(facts,
+			tool.Fact{
+				Label: name,
+				Group: fallback(item.Type, "网卡"),
+				Value: fmt.Sprintf("%s · IPv4 %s", fallback(item.LinkSpeed, "未知速率"), fallback(strings.Join(item.IPv4, " / "), "无")),
+			},
+			tool.Fact{
+				Label: "DNS",
+				Group: fallback(item.Type, "网卡"),
+				Value: fallback(strings.Join(item.DNS, " / "), "无"),
+			},
+		)
 	}
-	if len(rows) == 0 {
-		rows = append(rows, []string{"没有已连接的网卡", "-", "-", "-", "-"})
+	if len(facts) == 0 {
+		facts = append(facts, tool.Fact{Label: "网络", Value: "没有已连接的网卡"})
 	}
-	return tool.Block{Kind: tool.BlockTable, Title: "已连接网络", Columns: []string{"网卡", "类型", "速率", "IPv4", "DNS"}, Rows: rows}
+	return factsBlock("已连接网络", facts)
 }
 
 func securityBlock(info securityInfo) tool.Block {
-	return tool.Block{
-		Kind:    tool.BlockTable,
-		Title:   "安全与启动",
-		Columns: []string{"项目", "状态"},
-		Rows: [][]string{
-			{"安全启动", fallback(info.SecureBoot, "未知")},
-			{"TPM", joinNonEmpty(" · ", info.TPM, info.TPMVersion)},
-			{"Defender", fallback(info.Defender, "未知")},
-			{"实时保护", fallback(info.DefenderRealtime, "未知")},
-			{"防火墙", fallback(info.Firewall, "未知")},
-			{"BitLocker", fallback(info.BitLocker, "未知")},
-			{"硬件虚拟化", fallback(info.Virtualization, "未知")},
-		},
-	}
+	return factsBlock("安全与启动", []tool.Fact{
+		{Label: "安全启动", Value: fallback(info.SecureBoot, "未知")},
+		{Label: "TPM", Value: joinNonEmpty(" · ", info.TPM, info.TPMVersion)},
+		{Label: "Defender", Value: fallback(info.Defender, "未知")},
+		{Label: "实时保护", Value: fallback(info.DefenderRealtime, "未知")},
+		{Label: "防火墙", Value: fallback(info.Firewall, "未知")},
+		{Label: "BitLocker", Value: fallback(info.BitLocker, "未知")},
+		{Label: "硬件虚拟化", Value: fallback(info.Virtualization, "未知")},
+	})
 }
 
 func batteryBlock(info batteryInfo) tool.Block {

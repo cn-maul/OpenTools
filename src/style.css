@@ -1378,6 +1378,62 @@ button {
   border-color: color-mix(in oklab, var(--accent) 28%, var(--border));
 }
 
+/* Long multi-section reports (e.g. system inventory) become one container of
+   cards: short sections pair up, long ones take the full width. */
+.result-content--stacked .result-stream {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: auto;
+  align-items: start;
+  gap: 10px;
+  border: 1px solid var(--separator);
+  border-radius: 16px;
+  background: color-mix(in oklab, var(--surface-secondary) 42%, var(--surface));
+  padding: 10px;
+}
+
+.result-content--stacked .result-stream-item {
+  height: auto;
+  min-width: 0;
+  overflow: visible;
+  border: 1px solid var(--separator);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 0 13px 13px;
+  scrollbar-gutter: auto;
+}
+
+/* Long sections span the full width; short ones share a row. */
+.result-content--stacked .result-stream-item:not(.result-stream-item--light) {
+  grid-column: 1 / -1;
+}
+
+.result-content--stacked .result-stream-head {
+  position: static;
+  margin: 0 0 11px;
+  background: transparent;
+  padding: 13px 0 0;
+  backdrop-filter: none;
+}
+
+.result-content--stacked .result-stream-title h3 {
+  font-size: 15px;
+}
+
+.result-content--stacked .result-stream-placeholder span {
+  height: 4px;
+}
+
+@media (max-width: 1180px) {
+  .result-content--stacked .result-stream {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .result-content--stacked .result-stream-item {
+    grid-column: 1 / -1;
+  }
+}
+
 .result-stream-head {
   position: sticky;
   top: 0;

@@ -16,6 +16,8 @@ const (
 	BlockTable  BlockKind = "table"
 	BlockDiff   BlockKind = "diff"
 	BlockGrid   BlockKind = "status-grid"
+	BlockMeter  BlockKind = "meter"
+	BlockFacts  BlockKind = "facts"
 )
 
 // Tone conveys status without dictating a component.
@@ -47,6 +49,34 @@ type Block struct {
 	Data     any        `json:"data,omitempty"`
 	Columns  []string   `json:"columns,omitempty"`
 	Rows     [][]string `json:"rows,omitempty"`
+}
+
+// MeterItem is one progress ring or bar. Value is in the unit named by Unit,
+// normally 0-100 for percentages.
+type MeterItem struct {
+	Label    string `json:"label"`
+	Value    float64 `json:"value"`
+	Max      float64 `json:"max,omitempty"`
+	Unit     string `json:"unit,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+	Tone     Tone   `json:"tone,omitempty"`
+	Variant  string `json:"variant,omitempty"`
+	Segments []MeterSegment `json:"segments,omitempty"`
+}
+
+// MeterSegment is an optional colored range inside a bar, used for
+// multi-part capacity such as several disks in one volume group.
+type MeterSegment struct {
+	Label string  `json:"label"`
+	Value float64 `json:"value"`
+	Tone  Tone    `json:"tone,omitempty"`
+}
+
+// Fact is one labelled value. Group renders a visual section heading.
+type Fact struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+	Group string `json:"group,omitempty"`
 }
 
 // StatusCell is one compact grid cell rendered by the status-grid block.
@@ -112,7 +142,7 @@ func ValidateResult(result Result) error {
 func validateBlocks(blocks []Block) error {
 	for i, block := range blocks {
 		switch block.Kind {
-		case BlockText, BlockNotice, BlockCode, BlockJSON, BlockTable, BlockDiff, BlockGrid:
+		case BlockText, BlockNotice, BlockCode, BlockJSON, BlockTable, BlockDiff, BlockGrid, BlockMeter, BlockFacts:
 		default:
 			return fmt.Errorf("result block %d has unknown kind %q", i, block.Kind)
 		}

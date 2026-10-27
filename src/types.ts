@@ -4,8 +4,27 @@ export type BlockKind =
   | "code"
   | "json"
   | "table"
-    | "diff"
-    | "status-grid";
+  | "diff"
+  | "status-grid"
+  | "meter"
+  | "facts";
+
+  export interface MeterItem {
+    label: string;
+    value: number;
+    max?: number;
+    unit?: string;
+    detail?: string;
+    tone?: Tone;
+    variant?: "ring" | "bar";
+    segments?: { label: string; value: number; tone?: Tone }[];
+  }
+
+  export interface FactItem {
+    label: string;
+    value: string;
+    group?: string;
+  }
 
   export interface StatusCell {
     label: string;

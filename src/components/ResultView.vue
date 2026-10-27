@@ -4,7 +4,9 @@ import { computed, nextTick, ref, watch } from "vue";
 import { resultText } from "../api";
 import type {
   Block,
+  FactItem,
   Job,
+  MeterItem,
   ResultAction,
   ResultSection,
   StatusCell,
@@ -17,6 +19,7 @@ import HeroCard from "../ui/HeroCard.vue";
 import HeroChip from "../ui/HeroChip.vue";
 import HeroKbd from "../ui/HeroKbd.vue";
 import HeroTable from "../ui/HeroTable.vue";
+import MetricView from "./MetricView.vue";
 import StatusGrid from "./StatusGrid.vue";
 
 const props = defineProps<{
@@ -47,6 +50,30 @@ const elapsed = computed(() => {
 });
 
 const streamedSections = computed(() => props.job?.sections ?? []);
+// System inventory reports many small sections. Render them as one continuous
+// surface instead of a grid of cramped cards.
+const stacked = computed(() => streamedSections.value.length > 2);
+
+// Light sections (a couple of gauges or a short fact list) only need half a
+// row; tables, capacity bars and long fact lists take the full width.
+function isLightSection(section: ResultSection) {
+  const blocks = section.blocks ?? [];
+  if (blocks.length === 0) return true;
+  if (blocks.length > 1) return false;
+  const block = blocks[0] as Block | undefined;
+  if (!block) return true;
+  if (block.kind === "notice") return true;
+  if (block.kind === "facts") {
+    const items = factItems(block);
+    return items.length > 0 && items.length <= 4;
+  }
+  if (block.kind === "meter") {
+    const items = meterItems(block);
+    if (items.some((item) => item.variant === "bar")) return false;
+    return items.length <= 2 && meterFacts(block).length <= 2;
+  }
+  return false;
+}
 const activeSectionID = computed(() => {
   const sections = streamedSections.value;
   return (
@@ -69,6 +96,22 @@ function gridCells(block: Block) {
 function gridLegend(block: Block) {
   const data = block.data as { legend?: unknown } | undefined;
   return Array.isArray(data?.legend) ? (data.legend as StatusLegendItem[]) : [];
+}
+
+function meterItems(block: Block) {
+  const data = block.data as { items?: unknown } | undefined;
+  return Array.isArray(data?.items) ? (data.items as MeterItem[]) : [];
+}
+
+function factItems(block: Block) {
+  const data = block.data as { items?: unknown } | undefined;
+  return Array.isArray(data?.items) ? (data.items as FactItem[]) : [];
+}
+
+// Meter blocks may carry facts alongside their gauges, e.g. memory modules.
+function meterFacts(block: Block) {
+  const data = block.data as { facts?: unknown } | undefined;
+  return Array.isArray(data?.facts) ? (data.facts as FactItem[]) : [];
 }
 
 async function copy(text: string, key: string) {
@@ -184,14 +227,19 @@ watch(
         <span :style="{ width: `${progress}%` }" />
       </div>
 
-      <div v-if="streamedSections.length" ref="content" class="result-content streamlined">
+      <div
+        v-if="streamedSections.length"
+        ref="content"
+        class="result-content streamlined"
+        :class="{ 'result-content--stacked': stacked }"
+      >
         <p v-if="job.result" class="result-summary compact">{{ job.result.summary }}</p>
         <div class="result-stream">
           <section
             v-for="(section, sectionIndex) in streamedSections"
             :key="section.id"
             class="result-stream-item"
-            :class="`state-${section.state}`"
+            :class="[`state-${section.state}`, { 'result-stream-item--light': stacked && isLightSection(section) }]"
           >
             <header class="result-stream-head">
               <div class="result-stream-title">
@@ -222,6 +270,17 @@ watch(
                   v-else-if="block.kind === 'status-grid'"
                   :cells="gridCells(block)"
                   :legend="gridLegend(block)"
+                  :label="block.title || section.title"
+                />
+                <MetricView
+                  v-else-if="block.kind === 'meter'"
+                  :metrics="meterItems(block)"
+                  :facts="meterFacts(block)"
+                  :label="block.title || section.title"
+                />
+                <MetricView
+                  v-else-if="block.kind === 'facts'"
+                  :facts="factItems(block)"
                   :label="block.title || section.title"
                 />
                 <p v-else-if="block.kind === 'text'" class="block-text">{{ block.text }}</p>
@@ -302,6 +361,19 @@ watch(
             :cells="gridCells(block)"
             :legend="gridLegend(block)"
             :label="block.title || '状态网格'"
+          />
+
+          <MetricView
+            v-else-if="block.kind === 'meter'"
+            :metrics="meterItems(block)"
+            :facts="meterFacts(block)"
+            :label="block.title || '指标'"
+          />
+
+          <MetricView
+            v-else-if="block.kind === 'facts'"
+            :facts="factItems(block)"
+            :label="block.title || '参数'"
           />
 
           <p v-else-if="block.kind === 'text'" class="block-text">{{ block.text }}</p>
