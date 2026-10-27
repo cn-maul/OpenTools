@@ -381,7 +381,11 @@ func (m *Manager) catalogSources() []string {
 		if value := strings.TrimSpace(os.Getenv("OPENTOOLS_CATALOG_URL")); value != "" {
 			return splitSources(value)
 		}
-		return discoverLocalCatalogs()
+		local := discoverLocalCatalogs()
+		if len(local) > 0 {
+			return local
+		}
+		return []string{defaultCatalogURL}
 	}
 	return sources
 }
