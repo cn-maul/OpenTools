@@ -49,6 +49,7 @@ $result = [ordered]@{
     drivers = @()
     ports = @()
     devices = @()
+    neighbors = @()
     warnings = @()
 }
 
@@ -83,10 +84,12 @@ try {
             network = ([string]$item.Type -match "Connection|Network")
             local = ([string]$item.Type -match "Local")
             source = "PrintManagement"
+            queuedJobs = 0
+            jobSummary = ""
         }
     }
 } catch {
-    $result.warnings += "打印管理接口不可用：" + $_.Exception.Message
+    # The WMI and registry fallbacks below cover this, so it is not a warning.
 }
 
 if ($result.printers.Count -eq 0) {
@@ -107,10 +110,12 @@ if ($result.printers.Count -eq 0) {
                 network = [bool]$item.Network
                 local = [bool]$item.Local
                 source = "Win32_Printer"
+                queuedJobs = 0
+                jobSummary = ""
             }
         }
     } catch {
-        $result.warnings += "WMI 打印机接口不可用：" + $_.Exception.Message
+        # The registry fallback below covers this.
     }
 }
 
@@ -143,6 +148,8 @@ if ($result.printers.Count -eq 0) {
                 network = $false
                 local = $true
                 source = "用户注册表"
+                queuedJobs = 0
+                jobSummary = ""
             }
         }
     }
@@ -157,19 +164,34 @@ if ($result.printers.Count -eq 0) {
     }
 }
 
+# Pending jobs explain a printer that stays "busy" and are only readable
+# while the spooler runs.
 try {
-    foreach ($item in @(Get-PrinterDriver -ErrorAction Stop)) {
-        $files = @()
-        foreach ($path in @($item.InfPath, $item.ConfigFile, $item.DataFile, $item.HelpFile)) {
-            if ($path) { $files += [string]$path }
-        }
-        $checked = $files.Count -gt 0
-        $ok = $true
-        foreach ($path in $files) {
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf -ErrorAction SilentlyContinue)) {
-                $ok = $false
+    foreach ($item in @(Get-PrintJob -ErrorAction Stop)) {
+        $printerName = [string]$item.PrinterName
+        $state = [string]$item.JobStatus
+        if (-not $state) { $state = [string]$item.Status }
+        $summary = if ($state) { $state } else { "排队中" }
+        foreach ($printer in $result.printers) {
+            if ([string]$printer.name -ne $printerName) { continue }
+            $printer.queuedJobs = [int]$printer.queuedJobs + 1
+            if ($printer.jobSummary) {
+                $printer.jobSummary = $printer.jobSummary + "、" + $summary
+            } else {
+                $printer.jobSummary = $summary
             }
         }
+    }
+} catch {
+    # A stopped spooler is the usual reason, and that is already reported as
+    # the root cause, so only a running spooler turns this into a warning.
+    if ($result.spooler.status -eq "Running") {
+        $result.warnings += "打印作业队列不可用，未能读取待处理任务。"
+    }
+}
+
+try {
+    foreach ($item in @(Get-PrinterDriver -ErrorAction Stop)) {
         $result.drivers += [ordered]@{
             name = [string]$item.Name
             manufacturer = [string]$item.Manufacturer
@@ -179,32 +201,67 @@ try {
             configFile = [string]$item.ConfigFile
             dataFile = [string]$item.DataFile
             helpFile = [string]$item.HelpFile
-            filesChecked = [bool]$checked
-            filesOK = [bool]($checked -and $ok)
+            driverDate = ""
+            model = ""
+            driverFile = ""
+            printProcessor = ""
+            hardwareId = ""
             source = "PrintManagement"
         }
     }
 } catch {
-    $result.warnings += "打印驱动接口不可用：" + $_.Exception.Message
+    # The driver registry below still verifies the driver state.
 }
 
-if ($result.drivers.Count -eq 0) {
-    $architecture = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "Windows ARM64" } else { "Windows x64" }
+# The driver registry is authoritative and readable even while the spooler is
+# stopped. It also carries the hardware id that tells a USB printer apart
+# from a network one, which the print management API does not expose.
+foreach ($environment in @("Windows x64", "Windows ARM64", "Windows NT x86")) {
     foreach ($version in @("Version-3", "Version-4")) {
-        $driverRoot = "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Environments\$architecture\Drivers\$version"
+        $driverRoot = "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Environments\$environment\Drivers\$version"
         Get-ChildItem -LiteralPath $driverRoot -ErrorAction SilentlyContinue | ForEach-Object {
-            $result.drivers += [ordered]@{
+            $values = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
+            if (-not $values) { return }
+            $infPath = [string]$values.InfPath
+            $model = ""
+            if ($infPath -and (Test-Path -LiteralPath $infPath -PathType Leaf -ErrorAction SilentlyContinue)) {
+                $manufacturerLine = Get-Content -LiteralPath $infPath -ErrorAction SilentlyContinue |
+                    Where-Object { $_ -match "^\s*\[Manufacturer\]\s*$" } |
+                    Select-Object -First 1
+                if ($manufacturerLine) {
+                    $model = ($manufacturerLine -replace "^\s*\[[^]]+\]\s*", "").Trim()
+                }
+            }
+            $registryDriver = [ordered]@{
                 name = [string]$_.PSChildName
-                manufacturer = ""
-                version = ""
-                environment = $architecture + " / " + $version
-                infPath = ""
-                configFile = ""
-                dataFile = ""
-                helpFile = ""
-                filesChecked = $false
-                filesOK = $false
+                manufacturer = [string]$values.Manufacturer
+                version = [string]$values.DriverVersion
+                driverDate = [string]$values.DriverDate
+                environment = $environment + " / " + $version
+                model = $model
+                infPath = $infPath
+                configFile = [string]$values."Configuration File"
+                dataFile = [string]$values."Data File"
+                helpFile = [string]$values."Help File"
+                driverFile = [string]$values.Driver
+                printProcessor = [string]$values."Print Processor"
+                hardwareId = [string]$values.HardwareID
                 source = "注册表"
+            }
+            $merged = $false
+            foreach ($existing in $result.drivers) {
+                if ([string]$existing.name -ne [string]$registryDriver.name) { continue }
+                $merged = $true
+                if (-not $existing.version) { $existing.version = $registryDriver.version }
+                if (-not $existing.driverDate) { $existing.driverDate = $registryDriver.driverDate }
+                if (-not $existing.driverFile) { $existing.driverFile = $registryDriver.driverFile }
+                if (-not $existing.printProcessor) { $existing.printProcessor = $registryDriver.printProcessor }
+                if (-not $existing.hardwareId) { $existing.hardwareId = $registryDriver.hardwareId }
+                if (-not $existing.environment) { $existing.environment = $registryDriver.environment }
+                if (-not $existing.model) { $existing.model = $registryDriver.model }
+            }
+            if (-not $merged) {
+                $result.drivers += $registryDriver
             }
         }
     }
@@ -216,32 +273,43 @@ try {
             name = [string]$item.Name
             description = [string]$item.Description
             host = [string]$item.PrinterHostAddress
+            ipAddress = [string]$item.PrinterHostAddress
+            monitor = "打印管理"
             port = if ($item.PortNumber) { [int]$item.PortNumber } else { 0 }
             protocol = [string]$item.Protocol
+            snmp = $false
             source = "PrintManagement"
             userRegistry = $false
         }
     }
 } catch {
-    $result.warnings += "打印端口接口不可用：" + $_.Exception.Message
+    # The port registry below still lists the printer ports.
 }
 
 if ($result.ports.Count -eq 0) {
     $portRoots = @(
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Monitors\Standard TCP/IP Port\Ports"; Description = "Standard TCP/IP Port" },
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Monitors\WSD Port\Ports"; Description = "WSD Port" },
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Monitors\Local Port\Ports"; Description = "Local Port" }
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Monitors\Standard TCP/IP Port\Ports"; Description = "Standard TCP/IP Port"; Monitor = "Standard TCP/IP Port" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Monitors\WSD Port\Ports"; Description = "WSD Port"; Monitor = "WSD Port" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Monitors\Local Port\Ports"; Description = "Local Port"; Monitor = "Local Port" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Monitors\USB Monitor\Ports"; Description = "USB Monitor"; Monitor = "USB Monitor" }
     )
     foreach ($root in $portRoots) {
         Get-ChildItem -LiteralPath $root.Path -ErrorAction SilentlyContinue | ForEach-Object {
             $values = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
-            $host = if ($values.HostName) { $values.HostName } elseif ($values.IPAddress) { $values.IPAddress } else { "" }
+            $hostName = if ($values.HostName) { [string]$values.HostName } else { "" }
+            $ipAddress = if ($values.IPAddress) { [string]$values.IPAddress } else { "" }
+            # $host is a PowerShell automatic variable, so the port target
+            # must be collected under a different name.
+            $portTarget = if ($hostName) { $hostName } elseif ($ipAddress) { $ipAddress } else { "" }
             $result.ports += [ordered]@{
                 name = [string]$_.PSChildName
                 description = [string]$root.Description
-                host = [string]$host
+                monitor = [string]$root.Monitor
+                host = [string]$portTarget
+                ipAddress = [string]$ipAddress
                 port = if ($values.PortNumber) { [int]$values.PortNumber } else { 0 }
                 protocol = [string]$values.Protocol
+                snmp = ([int]$values."SNMP Enabled" -eq 1)
                 source = "注册表"
                 userRegistry = $false
             }
@@ -250,7 +318,7 @@ if ($result.ports.Count -eq 0) {
 }
 
 try {
-    foreach ($item in @(Get-PnpDevice -Class Printer -ErrorAction Stop)) {
+    foreach ($item in @(Get-PnpDevice -ErrorAction Stop | Where-Object { $_.Class -eq "Printer" -or $_.Class -eq "PrintQueue" })) {
         $result.devices += [ordered]@{
             name = [string]$item.FriendlyName
             status = [string]$item.Status
@@ -263,7 +331,7 @@ try {
 } catch {
     try {
         foreach ($item in @(Get-CimInstance Win32_PnPEntity -ErrorAction Stop |
-            Where-Object { $_.PNPClass -eq "Printer" -or $_.Name -match "(?i)printer|打印" })) {
+            Where-Object { $_.PNPClass -eq "Printer" -or $_.PNPClass -eq "PrintQueue" })) {
             $result.devices += [ordered]@{
                 name = [string]$item.Name
                 status = [string]$item.Status
@@ -274,8 +342,26 @@ try {
             }
         }
     } catch {
-        $result.warnings += "打印机硬件接口不可用：" + $_.Exception.Message
+        # Without either device API the PnP status stays unknown.
     }
+}
+
+# The neighbour table proves whether a printer address is currently present
+# on the local link, which separates "host unreachable" from "printer offline".
+try {
+    foreach ($item in @(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop)) {
+        $mac = [string]$item.LinkLayerAddress
+        if (-not $mac -or $mac -eq "00-00-00-00-00-00") { continue }
+        if ($item.State -eq "Permanent") { continue }
+        $result.neighbors += [ordered]@{
+            ip = [string]$item.IPAddress
+            mac = $mac
+            state = [string]$item.State
+            interface = [string]$item.InterfaceAlias
+        }
+    }
+} catch {
+    $result.warnings += "邻居表不可用，未能核验打印机的网络邻居信息。"
 }
 
 $result | ConvertTo-Json -Depth 8 -Compress

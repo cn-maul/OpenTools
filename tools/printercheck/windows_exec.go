@@ -5,7 +5,6 @@ package printercheck
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -13,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"unicode/utf16"
 )
 
 func runPowerShell(ctx context.Context, script string) ([]byte, error) {
@@ -31,11 +29,26 @@ func runPowerShell(ctx context.Context, script string) ([]byte, error) {
 		}
 		executable = found
 	}
-	// UTF-16LE keeps Chinese output independent of the console code page.
 	script = "$OutputEncoding = New-Object System.Text.UTF8Encoding $false\n" +
 		"[Console]::OutputEncoding = $OutputEncoding\n" +
 		script
-	encoded := base64.StdEncoding.EncodeToString(utf16LE(script))
+	// The script is written to a temporary UTF-8 (BOM) file rather than
+	// passed with -EncodedCommand: the collection script is larger than the
+	// Windows argument limit, and a BOM keeps Chinese text intact for
+	// Windows PowerShell 5.1.
+	file, err := os.CreateTemp("", "opentools-printer-*.ps1")
+	if err != nil {
+		return nil, fmt.Errorf("创建临时脚本失败：%w", err)
+	}
+	path := file.Name()
+	defer os.Remove(path)
+	if _, err := file.Write(append([]byte{0xEF, 0xBB, 0xBF}, []byte(script)...)); err != nil {
+		file.Close()
+		return nil, fmt.Errorf("写入临时脚本失败：%w", err)
+	}
+	if err := file.Close(); err != nil {
+		return nil, fmt.Errorf("关闭临时脚本失败：%w", err)
+	}
 	cmd := exec.CommandContext(
 		ctx,
 		executable,
@@ -44,8 +57,8 @@ func runPowerShell(ctx context.Context, script string) ([]byte, error) {
 		"-NonInteractive",
 		"-ExecutionPolicy",
 		"Bypass",
-		"-EncodedCommand",
-		encoded,
+		"-File",
+		path,
 	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	cmd.Env = append(os.Environ(), "NO_COLOR=1")
@@ -63,13 +76,4 @@ func runPowerShell(ctx context.Context, script string) ([]byte, error) {
 		return nil, fmt.Errorf("Windows PowerShell 执行失败：%s", detail)
 	}
 	return stdout.Bytes(), nil
-}
-
-func utf16LE(value string) []byte {
-	units := utf16.Encode([]rune(value))
-	out := make([]byte, 0, len(units)*2)
-	for _, unit := range units {
-		out = append(out, byte(unit), byte(unit>>8))
-	}
-	return out
 }

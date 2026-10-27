@@ -10,7 +10,7 @@ import (
 	"opentools/pkg/tool"
 )
 
-const version = "1.0.0"
+const version = "1.1.0"
 
 // Tool reports the local printer configuration and likely health issues.
 type Tool struct{}
@@ -23,11 +23,11 @@ func (Tool) Definition() tool.Definition {
 	return tool.Definition{
 		ID:          "hardware.printers",
 		Name:        "打印机检测",
-		Summary:     "检测打印服务、已连接打印机、驱动和端口状态。",
-		Description: "只读检查 Windows 打印后台处理程序、打印机、打印驱动、端口和 PnP 设备。打印机列表、驱动和端口会分别采集，因此即使 Spooler 未运行，也会尽量显示已配置的打印机。网络打印机只做短超时 TCP 可达性检查，不会修改任何打印设置。",
+		Summary:     "检测真实打印机、驱动状态，并诊断连不上的具体原因。",
+		Description: "只读检查 Windows 打印后台处理程序、实体打印机、打印驱动、端口和 PnP 设备，并逐项给出连接失败的原因与处理建议。虚拟打印机（如 Microsoft Print to PDF）会被忽略。打印机列表、驱动和端口会分别采集，因此即使 Spooler 未运行，也会尽量显示已配置的打印机并完成驱动核验。网络打印机只做短超时 TCP 可达性检查，不会修改任何打印设置。",
 		Category:    "系统工具",
 		Icon:        "printer",
-		Keywords:    []string{"打印机", "打印", "驱动", "Spooler", "端口", "设备", "硬件"},
+		Keywords:    []string{"打印机", "打印", "驱动", "Spooler", "端口", "设备", "硬件", "离线", "诊断"},
 		Version:     version,
 		Effects:     []tool.Effect{tool.EffectReadFiles, tool.EffectNetwork},
 		Input:       tool.Object(map[string]*tool.Schema{}),
@@ -101,20 +101,19 @@ func (Tool) Run(ctx context.Context, input tool.Input, _ tool.Environment, repor
 }
 
 func summary(value analysis) string {
-	total := len(value.printers)
+	total := value.physical
 	service := serviceLabel(value.snapshot.Spooler)
 	if total == 0 {
-		return fmt.Sprintf("未发现已配置打印机；打印服务：%s。", service)
+		return fmt.Sprintf("未发现实体打印机；打印服务：%s。", service)
 	}
 	parts := []string{
-		fmt.Sprintf("检测到 %d 台已配置打印机", total),
-		fmt.Sprintf("物理打印机 %d 台", value.physical),
-		fmt.Sprintf("物理正常 %d 台", value.ready),
-		fmt.Sprintf("物理需检查 %d 台", value.warning),
-		fmt.Sprintf("物理异常 %d 台", value.danger),
+		fmt.Sprintf("检测到 %d 台实体打印机", total),
+		fmt.Sprintf("正常 %d 台", value.ready),
+		fmt.Sprintf("需检查 %d 台", value.warning),
+		fmt.Sprintf("异常 %d 台", value.danger),
 	}
-	if value.virtual > 0 {
-		parts = append(parts, fmt.Sprintf("虚拟 %d 台", value.virtual))
+	if len(value.ignored) > 0 {
+		parts = append(parts, fmt.Sprintf("已忽略 %d 个虚拟打印机", len(value.ignored)))
 	}
 	return strings.Join(parts, "，") + "；打印服务：" + service + "。"
 }

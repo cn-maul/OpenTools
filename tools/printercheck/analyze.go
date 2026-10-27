@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,13 +22,14 @@ const (
 )
 
 type analysis struct {
-	snapshot snapshot
-	printers []printerAnalysis
-	ready    int
-	warning  int
-	danger   int
-	virtual  int
-	physical int
+	snapshot  snapshot
+	printers  []printerAnalysis
+	ignored   []string
+	ready     int
+	warning   int
+	danger    int
+	physical  int
+	reachable int
 }
 
 type printerAnalysis struct {
@@ -35,13 +38,22 @@ type printerAnalysis struct {
 	Driver           *driverInfo
 	Device           *deviceInfo
 	DriverState      string
+	DriverDetail     string
 	Network          bool
 	NetworkChecked   bool
 	NetworkReachable bool
-	Virtual          bool
+	NetworkHost      string
+	NetworkIP        string
+	NeighborMAC      string
+	USBPresent       bool
+	AltPort          *portInfo
+	AltReachable     bool
 	Tone             tool.Tone
 	State            string
 	Detail           string
+	Causes           []string
+	Advice           []string
+	ConnectionKind   string
 }
 
 func analyze(ctx context.Context, value snapshot) analysis {
@@ -64,6 +76,10 @@ func analyze(ctx context.Context, value snapshot) analysis {
 	}
 
 	for _, info := range value.Printers {
+		if isVirtualPrinter(info) {
+			out.ignored = append(out.ignored, info.Name)
+			continue
+		}
 		item := printerAnalysis{Info: info}
 		if port, ok := ports[strings.ToLower(strings.TrimSpace(info.PortName))]; ok {
 			item.Port = &port
@@ -71,51 +87,401 @@ func analyze(ctx context.Context, value snapshot) analysis {
 			item.Port = &portInfo{
 				Name:         info.PortName,
 				Description:  "打印机注册表",
+				Monitor:      "打印机注册表",
 				Source:       "打印机注册表",
 				UserRegistry: true,
 			}
 		}
-		if driver, ok := drivers[strings.ToLower(strings.TrimSpace(info.DriverName))]; ok {
-			item.Driver = &driver
-			if driver.FilesChecked && !driver.FilesOK {
-				item.DriverState = driverBroken
-			} else {
-				item.DriverState = driverInstalled
-			}
-		} else if strings.TrimSpace(info.DriverName) == "" {
-			item.DriverState = driverUnknown
-		} else if len(drivers) > 0 {
-			item.DriverState = driverMissing
-		} else {
-			item.DriverState = driverUnknown
-		}
+		item.Driver, item.DriverState, item.DriverDetail = resolveDriver(info, drivers, value.Drivers)
 		if device, ok := devices[strings.ToLower(strings.TrimSpace(info.Name))]; ok {
 			item.Device = &device
 		}
-		item.Virtual = isVirtualPrinter(info)
-		item.Network = info.Network || (item.Port != nil && strings.TrimSpace(item.Port.Host) != "")
-		if item.Port != nil && strings.TrimSpace(item.Port.Host) != "" && !item.Virtual {
-			item.Network = true
-			item.NetworkChecked = true
-			item.NetworkReachable = portReachable(ctx, item.Port.Host, item.Port.Port)
-		}
-		item.Tone, item.State, item.Detail = printerState(out.snapshot, item)
-		if item.Virtual {
-			out.virtual++
-		} else {
-			switch item.Tone {
-			case tool.ToneSuccess:
-				out.ready++
-			case tool.ToneWarning:
-				out.warning++
-			case tool.ToneDanger:
-				out.danger++
+		item.Network, item.ConnectionKind = classifyConnection(info, item.Port, item.Driver)
+		// A queue bound to a local port can still be a network printer: the
+		// system keeps a TCP/IP port for it. Find that port so the report
+		// can name the real address and check whether it answers.
+		if !item.Network {
+			if alt := findNetworkPort(info, value.Ports, item.Driver); alt != nil {
+				item.AltPort = alt
+				host := resolvePortHost(alt)
+				item.NetworkHost = host
+				if ip := resolveIP(host); ip != "" {
+					item.NetworkIP = ip
+				}
+				if host != "" {
+					item.AltReachable = portReachable(ctx, host, alt.Port)
+					if item.AltReachable {
+						out.reachable++
+					}
+				}
 			}
-			out.physical++
 		}
+		if item.Network && item.Port != nil {
+			host := resolvePortHost(item.Port)
+			item.NetworkHost = host
+			if ip := resolveIP(host); ip != "" {
+				item.NetworkIP = ip
+			}
+			if host != "" {
+				item.NetworkChecked = true
+				item.NetworkReachable = portReachable(ctx, host, item.Port.Port)
+				if item.NetworkReachable {
+					out.reachable++
+				}
+			}
+		}
+		item.USBPresent = usbPrinterPresent(item, value.Devices)
+		if item.NetworkIP != "" {
+			for _, neighbor := range value.Neighbors {
+				if neighbor.IP == item.NetworkIP {
+					item.NeighborMAC = neighbor.MAC
+				}
+			}
+		}
+		item.Tone, item.State, item.Detail, item.Causes, item.Advice = diagnose(out.snapshot, item, value)
+		switch item.Tone {
+		case tool.ToneSuccess:
+			out.ready++
+		case tool.ToneWarning:
+			out.warning++
+		case tool.ToneDanger:
+			out.danger++
+		}
+		out.physical++
 		out.printers = append(out.printers, item)
 	}
 	return out
+}
+
+// resolveDriver links a queue to its driver. The print management API is the
+// primary source, but a stopped spooler leaves the queue without a driver
+// name, so the driver registry is matched by name and by hardware id.
+func resolveDriver(
+	info printerInfo,
+	drivers map[string]driverInfo,
+	all []driverInfo,
+) (*driverInfo, string, string) {
+	name := strings.TrimSpace(info.DriverName)
+	if name != "" {
+		if driver, ok := drivers[strings.ToLower(name)]; ok {
+			return &driver, driverState(driver), driverSummaryLine(driver)
+		}
+	}
+	// A queue read from the user registry carries no driver name. The queue
+	// name is usually the driver name plus a location suffix, for example
+	// "Pantum MS6000NW Series 0001" for the "Pantum MS6000NW Series"
+	// driver, so the longest matching driver name wins.
+	if match, ok := matchDriverByName(info.Name, all); ok {
+		return match, driverState(*match), driverSummaryLine(*match)
+	}
+	// Fall back to the only real driver on the machine.
+	candidates := make([]driverInfo, 0, len(all))
+	for _, driver := range all {
+		if isClassDriver(driver.Name) {
+			continue
+		}
+		candidates = append(candidates, driver)
+	}
+	if len(candidates) == 1 {
+		copied := candidates[0]
+		return &copied, driverState(copied), driverSummaryLine(copied)
+	}
+	// Otherwise pick the driver whose hardware id fits a USB printer.
+	for _, driver := range candidates {
+		if strings.Contains(strings.ToLower(driver.HardwareID), "usbprint") {
+			copied := driver
+			return &copied, driverState(copied), driverSummaryLine(copied)
+		}
+	}
+	if name == "" {
+		return nil, driverUnknown, "队列未登记驱动名称"
+	}
+	if len(all) == 0 {
+		return nil, driverUnknown, "未能读取驱动列表"
+	}
+	return nil, driverMissing, "系统中未找到名为「" + name + "」的驱动"
+}
+
+// matchDriverByName finds the driver whose name best matches the queue
+// name. The queue name is the driver name with a trailing location or
+// instance suffix, so a prefix match is the reliable signal.
+func matchDriverByName(queueName string, all []driverInfo) (*driverInfo, bool) {
+	queue := strings.ToLower(strings.TrimSpace(queueName))
+	if queue == "" {
+		return nil, false
+	}
+	best := ""
+	var matched *driverInfo
+	for i := range all {
+		driver := all[i]
+		if isClassDriver(driver.Name) {
+			continue
+		}
+		candidate := strings.ToLower(strings.TrimSpace(driver.Name))
+		if candidate == "" {
+			continue
+		}
+		if queue == candidate ||
+			strings.HasPrefix(queue, candidate) ||
+			strings.HasPrefix(candidate, queue) {
+			if len(candidate) > len(best) {
+				best = candidate
+				copied := driver
+				matched = &copied
+			}
+		}
+	}
+	return matched, matched != nil
+}
+
+func driverState(driver driverInfo) string {
+	if driver.InfPath != "" && !fileExists(driver.InfPath) {
+		return driverBroken
+	}
+	if driver.DriverFile != "" && !driverFileExists(driver) {
+		return driverBroken
+	}
+	return driverInstalled
+}
+
+// fileExists checks an absolute path.
+func fileExists(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// driverFileExists resolves a driver file, which Windows stores as a bare
+// file name. The real file lives in the driver store next to the INF, so
+// checking System32 alone would report every third-party driver as broken.
+func driverFileExists(driver driverInfo) bool {
+	name := strings.TrimSpace(driver.DriverFile)
+	if name == "" {
+		return true
+	}
+	if strings.Contains(name, `\`) || strings.Contains(name, "/") {
+		return fileExists(name)
+	}
+	candidates := []string{
+		filepath.Join(systemDirectory(), name),
+		filepath.Join(systemDirectory(), "spool", "drivers", name),
+	}
+	if inf := strings.TrimSpace(driver.InfPath); inf != "" {
+		store := filepath.Dir(inf)
+		candidates = append(candidates,
+			filepath.Join(store, name),
+			filepath.Join(store, "x64", name),
+			filepath.Join(store, "amd64", name),
+			filepath.Join(store, "Amd64", name),
+		)
+		// Driver packages keep their payload in architecture and language
+		// subdirectories, so fall back to a bounded recursive search.
+		if found := findFileBelow(store, name, 3); found != "" {
+			candidates = append(candidates, found)
+		}
+	}
+	for _, candidate := range candidates {
+		if fileExists(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func systemDirectory() string {
+	if root := strings.TrimSpace(os.Getenv("SystemRoot")); root != "" {
+		return filepath.Join(root, "System32")
+	}
+	return filepath.Join(os.Getenv("WINDIR"), "System32")
+}
+
+// findFileBelow looks for a file name within a few directory levels.
+func findFileBelow(root, name string, depth int) string {
+	if depth < 0 {
+		return ""
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.EqualFold(entry.Name(), name) {
+			return filepath.Join(root, entry.Name())
+		}
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if found := findFileBelow(filepath.Join(root, entry.Name()), name, depth-1); found != "" {
+			return found
+		}
+	}
+	return ""
+}
+
+func driverSummaryLine(driver driverInfo) string {
+	parts := []string{driver.Manufacturer}
+	if driver.Version != "" {
+		parts = append(parts, "v"+driver.Version)
+	}
+	if driver.DriverDate != "" {
+		parts = append(parts, driver.DriverDate)
+	}
+	parts = append(parts, driver.Source)
+	return joinNonEmpty(" · ", parts...)
+}
+
+// classifyConnection decides how a queue reaches its printer.
+func classifyConnection(info printerInfo, port *portInfo, driver *driverInfo) (bool, string) {
+	if port != nil {
+		switch strings.ToLower(strings.TrimSpace(port.Monitor)) {
+		case "standard tcp/ip port", "wsd port", "打印管理":
+			return true, "网络"
+		case "usb monitor":
+			return false, "USB"
+		case "local port", "打印机注册表":
+			return false, "本地端口"
+		}
+		if strings.TrimSpace(port.Host) != "" {
+			return true, "网络"
+		}
+	}
+	if info.Network {
+		return true, "网络"
+	}
+	if driver != nil && strings.Contains(strings.ToLower(driver.HardwareID), "usbprint") {
+		return false, "USB"
+	}
+	return false, "未知"
+}
+
+func isClassDriver(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.Contains(lower, "class driver") ||
+		strings.Contains(lower, "microsoft ipp") ||
+		strings.Contains(lower, "virtual print")
+}
+
+// findNetworkPort looks for a TCP/IP or WSD port that belongs to the same
+// printer. Windows keeps such a port even when the queue itself was bound
+// to a local port, and that port holds the printer's real address.
+func findNetworkPort(info printerInfo, ports []portInfo, driver *driverInfo) *portInfo {
+	queue := strings.ToLower(strings.TrimSpace(info.Name))
+	driverName := strings.ToLower(strings.TrimSpace(info.DriverName))
+	if driverName == "" && driver != nil {
+		driverName = strings.ToLower(strings.TrimSpace(driver.Name))
+	}
+	var best *portInfo
+	bestScore := -1
+	for i := range ports {
+		port := ports[i]
+		monitor := strings.ToLower(strings.TrimSpace(port.Monitor))
+		if monitor != "standard tcp/ip port" && monitor != "wsd port" && monitor != "打印管理" {
+			continue
+		}
+		host := strings.ToLower(strings.TrimSpace(port.Host))
+		if host == "" {
+			continue
+		}
+		// The port name usually embeds the printer or driver name, for
+		// example "IPP_Pantum-3B27D2_1".
+		portName := strings.ToLower(strings.TrimSpace(port.Name))
+		score := 0
+		if driverName != "" && strings.Contains(portName, driverName) {
+			score += 2
+		}
+		if queue != "" && strings.Contains(portName, queue) {
+			score += 2
+		}
+		for _, token := range driverTokens(driverName) {
+			if len(token) >= 4 && strings.Contains(portName, token) {
+				score++
+			}
+		}
+		if score > bestScore {
+			bestScore = score
+			copied := port
+			best = &copied
+		}
+	}
+	return best
+}
+
+// driverTokens splits a driver name into comparable fragments.
+func driverTokens(driverName string) []string {
+	fields := strings.FieldsFunc(strings.ToLower(driverName), func(r rune) bool {
+		return r == ' ' || r == '-' || r == '_' || r == '.'
+	})
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if len(field) >= 4 {
+			out = append(out, field)
+		}
+	}
+	return out
+}
+
+// resolveIP turns a host name into an IPv4 address so the report can show
+// the printer's actual address and match it against the neighbour table.
+func resolveIP(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	addresses, err := net.LookupHost(host)
+	if err != nil {
+		return ""
+	}
+	for _, address := range addresses {
+		parsed := net.ParseIP(address)
+		if parsed == nil {
+			continue
+		}
+		if v4 := parsed.To4(); v4 != nil {
+			return v4.String()
+		}
+	}
+	return ""
+}
+
+// usbPrinterPresent reports whether a USB printer device is currently
+// attached. A driver that declares a USB hardware id does not mean the
+// printer is connected over USB.
+func usbPrinterPresent(item printerAnalysis, devices []deviceInfo) bool {
+	for _, device := range devices {
+		if strings.EqualFold(device.Class, "Printer") &&
+			!strings.EqualFold(device.Status, "Unknown") &&
+			!strings.Contains(device.Problem, "PHANTOM") {
+			return true
+		}
+	}
+	return false
+}
+
+// resolvePortHost turns a port target into something dialable. Windows
+// stores either an IP or a host name, and the host name may need resolving.
+func resolvePortHost(port *portInfo) string {
+	if port == nil {
+		return ""
+	}
+	if ip := strings.TrimSpace(port.IPAddress); ip != "" {
+		return ip
+	}
+	host := strings.TrimSpace(port.Host)
+	if host == "" {
+		return ""
+	}
+	if net.ParseIP(host) != nil {
+		return host
+	}
+	return host
 }
 
 func portReachable(ctx context.Context, host string, port int) bool {
@@ -138,85 +504,209 @@ func portReachable(ctx context.Context, host string, port int) bool {
 	return true
 }
 
-func printerState(value snapshot, item printerAnalysis) (tool.Tone, string, string) {
-	service := serviceLabel(value.Spooler)
+// diagnose turns the raw snapshot into a verdict plus the concrete reasons
+// behind it. Every cause is one thing the user can act on.
+func diagnose(value snapshot, item printerAnalysis, all snapshot) (tool.Tone, string, string, []string, []string) {
+	causes := make([]string, 0, 4)
+	advice := make([]string, 0, 4)
 	driver := driverLabel(item)
-	connection := connectionLabel(item)
-	if item.Virtual {
-		return tool.ToneNeutral, "虚拟打印机", driver + "；" + connection
+
+	spoolerDown := !value.Spooler.Found || !strings.EqualFold(value.Spooler.Status, "Running")
+	if spoolerDown {
+		causes = append(causes, "打印服务 Spooler 未运行，系统不会尝试连接打印机")
+		advice = append(advice, "启动打印服务：services.msc 中启动「Print Spooler」")
 	}
-	if !value.Spooler.Found {
-		return tool.ToneDanger, "无法读取打印服务", service + "；" + driver + "；" + connection
+
+	switch item.DriverState {
+	case driverMissing:
+		causes = append(causes, "系统缺少该队列对应的打印驱动")
+		advice = append(advice, "在「设备和打印机」中重新添加打印机并安装厂商驱动")
+	case driverBroken:
+		causes = append(causes, "驱动已注册但驱动文件缺失，驱动无法加载")
+		advice = append(advice, "从厂商官网或 Windows Update 重新安装该打印机驱动")
+	case driverUnknown:
+		causes = append(causes, "驱动状态无法验证："+item.DriverDetail)
 	}
-	if !strings.EqualFold(value.Spooler.Status, "Running") {
-		return tool.ToneDanger, "打印服务未运行", service + "；" + driver + "；" + connection
-	}
+
 	if item.Info.WorkOffline || strings.Contains(strings.ToLower(item.Info.PrinterStatus), "offline") {
-		return tool.ToneDanger, "打印机离线", "设备报告离线；" + driver + "；" + connection
+		causes = append(causes, "打印机报告为离线状态")
+		advice = append(advice, "取消「脱机使用打印机」，并确认打印机已开机联网")
 	}
-	if item.DriverState == driverMissing {
-		return tool.ToneDanger, "驱动缺失", driver + "；" + connection
+
+	// Connection diagnosis. A queue bound to a local port can never reach a
+	// network printer, even when the printer itself is online.
+	switch {
+	case item.ConnectionKind == "网络":
+		host := resolvePortHost(item.Port)
+		target := host
+		if item.Port != nil && item.Port.Port > 0 {
+			target = net.JoinHostPort(host, strconv.Itoa(item.Port.Port))
+		}
+		switch {
+		case item.NetworkChecked && item.NetworkReachable:
+			causes = append(causes, "网络打印端口 "+target+" 可达")
+		case item.NetworkChecked && !item.NetworkReachable:
+			causes = append(causes, "网络打印端口 "+target+" 无法建立连接")
+			if ip := item.Port.IPAddress; ip != "" {
+				advice = append(advice, "确认打印机 IP 未变更，或在打印机端口设置中更新 IP")
+			}
+			advice = append(advice, "确认本机与打印机处于同一网段，且防火墙未拦截打印端口")
+		default:
+			causes = append(causes, "网络打印端口未配置可用的主机地址")
+			advice = append(advice, "在打印机端口设置中填写打印机 IP 地址")
+		}
+	case item.ConnectionKind == "本地端口":
+		// The queue points at a local port. If the machine also knows a
+		// network port for this printer, the printer is a network device
+		// that was never re-bound, which is the usual cause.
+		if item.AltPort != nil {
+			target := item.NetworkIP
+			if target == "" {
+				target = item.NetworkHost
+			}
+			port := item.AltPort.Port
+			if port <= 0 {
+				port = 9100
+			}
+			if item.AltReachable {
+				causes = append(causes, "队列绑定在本地端口（"+item.Info.PortName+
+					"），但系统中的网络端口 "+net.JoinHostPort(target, strconv.Itoa(port))+
+					" 可以连通")
+				advice = append(advice, "打印队列端口配置错误：将其改为 TCP/IP 端口并指向 "+
+					target)
+			} else {
+				causes = append(causes, "队列绑定在本地端口（"+item.Info.PortName+
+					"），网络端口 "+net.JoinHostPort(target, strconv.Itoa(port))+" 无法连通")
+				advice = append(advice, "确认打印机已开机并与本机处于同一网段，然后把队列端口改为 TCP/IP 端口 "+
+					target)
+			}
+		} else if item.Driver != nil &&
+			strings.Contains(strings.ToLower(item.Driver.HardwareID), "usbprint") {
+			causes = append(causes, "队列绑定在本地端口，驱动声明为 USB 设备")
+			advice = append(advice, "重新添加打印机并选择正确的 USB 端口")
+		} else {
+			causes = append(causes, "队列绑定在本地端口（"+item.Info.PortName+"），无法通过网络寻址")
+			advice = append(advice, "若打印机为网络机型，请改用 TCP/IP 端口并填写打印机 IP")
+		}
 	}
-	if item.DriverState == driverBroken {
-		return tool.ToneDanger, "驱动文件缺失", driver + "；" + connection
+
+	if item.Device != nil {
+		problem := strings.TrimSpace(item.Device.Problem)
+		if problem != "" && problem != "0" && !strings.EqualFold(problem, "CM_PROB_PHANTOM") {
+			causes = append(causes, "设备状态异常："+problem)
+			advice = append(advice, "在设备管理器中检查该打印机设备并重新扫描硬件改动")
+		}
 	}
-	if item.DriverState != driverInstalled {
-		return tool.ToneWarning, "驱动无法验证", driver + "；" + connection
+
+	if item.Info.QueuedJobs > 0 {
+		causes = append(causes, fmt.Sprintf("队列中有 %d 个待处理任务（%s）", item.Info.QueuedJobs, item.Info.JobSummary))
+		advice = append(advice, "在打印队列中清空卡住的任务后重试")
 	}
-	if item.NetworkChecked && item.NetworkReachable {
-		return tool.ToneSuccess, "网络连接正常", driver + "；" + connection
+
+	// Verdict.
+	tone := tool.ToneSuccess
+	state := "连接正常"
+	switch {
+	case len(causes) == 0:
+		causes = append(causes, "未发现异常")
+	case spoolerDown:
+		tone = tool.ToneDanger
+		state = "打印服务未运行"
+	case item.DriverState == driverMissing || item.DriverState == driverBroken:
+		tone = tool.ToneDanger
+		state = driverStateLabel(item.DriverState)
+	case item.Info.WorkOffline || strings.Contains(strings.ToLower(item.Info.PrinterStatus), "offline"):
+		tone = tool.ToneDanger
+		state = "打印机离线"
+	case item.NetworkChecked && !item.NetworkReachable:
+		tone = tool.ToneDanger
+		state = "网络不可达"
+	case item.ConnectionKind == "本地端口":
+		if item.AltPort != nil {
+			tone = tool.ToneDanger
+			state = "打印队列端口配置错误"
+		} else {
+			tone = tool.ToneWarning
+			state = "端口配置需调整"
+		}
+	case item.DriverState == driverUnknown:
+		tone = tool.ToneWarning
+		state = "驱动无法验证"
+	case len(causes) > 0:
+		tone = tool.ToneWarning
+		state = "需检查"
 	}
-	if item.NetworkChecked && !item.NetworkReachable {
-		return tool.ToneWarning, "网络不可达", driver + "；" + connection
+
+	detail := driver + "；" + connectionLabel(item)
+	if item.NetworkIP != "" {
+		detail += "；" + item.NetworkIP
 	}
-	if item.Device != nil && strings.EqualFold(item.Device.Status, "OK") {
-		return tool.ToneSuccess, "设备已连接", driver + "；" + connection
+	return tone, state, detail, causes, advice
+}
+
+func driverStateLabel(state string) string {
+	switch state {
+	case driverMissing:
+		return "驱动缺失"
+	case driverBroken:
+		return "驱动文件缺失"
+	default:
+		return state
 	}
-	if item.Port != nil {
-		return tool.ToneWarning, "已配置，连接未知", driver + "；" + connection
-	}
-	return tool.ToneWarning, "配置不完整", driver + "；" + connection
 }
 
 func driverLabel(item printerAnalysis) string {
 	name := strings.TrimSpace(item.Info.DriverName)
+	if name == "" && item.Driver != nil {
+		name = item.Driver.Name
+	}
 	if name == "" {
 		name = "未登记驱动"
 	}
 	switch item.DriverState {
 	case driverInstalled:
-		if item.Driver != nil && strings.TrimSpace(item.Driver.Version) != "" {
-			return "驱动已安装（" + name + "，v" + item.Driver.Version + "）"
+		parts := []string{"驱动已安装"}
+		if item.Driver != nil {
+			if strings.TrimSpace(item.Driver.Version) != "" {
+				parts = append(parts, "v"+item.Driver.Version)
+			}
+			if strings.TrimSpace(item.Driver.Manufacturer) != "" {
+				parts = append(parts, item.Driver.Manufacturer)
+			}
 		}
-		return "驱动已安装（" + name + "）"
+		return strings.Join(parts, " ") + "（" + name + "）"
 	case driverMissing:
 		return "驱动缺失（" + name + "）"
 	case driverBroken:
 		return "驱动文件缺失（" + name + "）"
 	default:
+		if item.DriverDetail != "" {
+			return "驱动无法验证（" + name + "，" + item.DriverDetail + "）"
+		}
 		return "驱动无法验证（" + name + "）"
 	}
 }
 
 func connectionLabel(item printerAnalysis) string {
-	if item.Virtual {
-		return "虚拟设备"
-	}
-	if item.NetworkChecked {
-		if item.NetworkReachable {
-			return "TCP 端口可达"
+	switch item.ConnectionKind {
+	case "网络":
+		if item.NetworkChecked {
+			if item.NetworkReachable {
+				return "TCP 端口可达"
+			}
+			return "TCP 端口不可达"
 		}
-		return "TCP 端口不可达"
+		return "网络地址未验证"
+	case "USB":
+		return "USB 连接"
+	case "本地端口":
+		return "本地端口"
 	}
 	if item.Device != nil {
 		return "PnP " + fallback(item.Device.Status, "状态未知")
 	}
-	if item.Info.Local {
-		return "本地已配置"
-	}
 	return "连接状态未知"
 }
-
 func serviceLabel(value spoolerInfo) string {
 	if !value.Found {
 		return "打印服务未找到"
@@ -240,25 +730,51 @@ func isVirtualPrinter(item printerInfo) bool {
 		item.DriverName,
 		item.PortName,
 	}, " "))
-	for _, marker := range []string{"pdf", "onenote", "fax", "xps", "send to", "microsoft print", "portprompt", "nul:", "虚拟"} {
+	for _, marker := range []string{
+		"print to pdf",
+		"onenote",
+		"microsoft print to",
+		"microsoft xps",
+		"fax",
+		"send to",
+		"portprompt",
+		"nul:",
+		"虚拟打印机",
+		"virtual printer",
+		"local port",
+		"nul",
+	} {
 		if strings.Contains(text, marker) {
 			return true
 		}
+	}
+	// A queue with no driver and no device is a leftover software queue
+	// rather than a physical printer.
+	if strings.TrimSpace(item.DriverName) == "" && !item.Network && !item.Local {
+		return true
 	}
 	return false
 }
 
 func overviewBlocks(value analysis) []tool.Block {
-	facts := []tool.Fact{
-		{Label: "已配置打印机", Value: fmt.Sprintf("%d 台", len(value.printers))},
-		{Label: "物理打印机", Value: fmt.Sprintf("%d 台", value.physical)},
+	printerFacts := []tool.Fact{
+		{Label: "真实打印机", Value: fmt.Sprintf("%d 台", value.physical)},
 		{Label: "连接正常", Value: fmt.Sprintf("%d 台", value.ready)},
-		{Label: "物理需检查", Value: fmt.Sprintf("%d 台", value.warning)},
-		{Label: "物理异常", Value: fmt.Sprintf("%d 台", value.danger)},
-		{Label: "虚拟打印机", Value: fmt.Sprintf("%d 台", value.virtual)},
+		{Label: "需检查", Value: fmt.Sprintf("%d 台", value.warning)},
+		{Label: "异常", Value: fmt.Sprintf("%d 台", value.danger)},
+		{Label: "网络可达", Value: fmt.Sprintf("%d 台", value.reachable)},
+	}
+	systemFacts := []tool.Fact{
 		{Label: "默认打印机", Value: fallback(value.snapshot.DefaultPrinter, "未设置")},
 		{Label: "打印服务", Value: serviceLabel(value.snapshot.Spooler)},
 	}
+	for i := range printerFacts {
+		printerFacts[i].Group = "打印机"
+	}
+	for i := range systemFacts {
+		systemFacts[i].Group = "系统"
+	}
+	facts := append(printerFacts, systemFacts...)
 	cells := []tool.StatusCell{
 		{Label: "打印服务", Tone: serviceTone(value.snapshot.Spooler), Detail: serviceLabel(value.snapshot.Spooler)},
 		{Label: "驱动", Tone: driverSummaryTone(value), Detail: driverSummary(value)},
@@ -272,14 +788,14 @@ func overviewBlocks(value analysis) []tool.Block {
 			{Label: "正常", Tone: tool.ToneSuccess},
 			{Label: "需检查", Tone: tool.ToneWarning},
 			{Label: "异常", Tone: tool.ToneDanger},
-			{Label: "未知/虚拟", Tone: tool.ToneNeutral},
+			{Label: "未知", Tone: tool.ToneNeutral},
 		}),
 	}
 	if value.physical > 0 {
 		ratio := float64(value.ready) * 100 / float64(value.physical)
 		blocks = append([]tool.Block{{
 			Kind:  tool.BlockMeter,
-			Title: "物理打印机健康度",
+			Title: "打印机健康度",
 			Data: map[string]any{"items": []tool.MeterItem{{
 				Label:   "连接正常",
 				Value:   ratio,
@@ -287,7 +803,7 @@ func overviewBlocks(value analysis) []tool.Block {
 				Unit:    "%",
 				Detail:  fmt.Sprintf("%d / %d 台", value.ready, value.physical),
 				Tone:    ratioTone(ratio),
-				Variant: "ring",
+				Variant: "bar",
 			}}},
 		}}, blocks...)
 	}
@@ -296,15 +812,20 @@ func overviewBlocks(value analysis) []tool.Block {
 
 func printersBlocks(value analysis) []tool.Block {
 	if len(value.printers) == 0 {
+		text := "没有检测到已安装的实体打印机。"
+		if len(value.ignored) > 0 {
+			text += "已忽略 " + fmt.Sprintf("%d", len(value.ignored)) + " 个虚拟打印机（" +
+				strings.Join(value.ignored, "、") + "）。"
+		}
 		return []tool.Block{{
 			Kind:  tool.BlockNotice,
 			Tone:  tool.ToneWarning,
 			Title: "打印机",
-			Text:  "没有从打印管理接口或用户注册表读取到已配置打印机。",
+			Text:  text,
 		}}
 	}
 	cells := make([]tool.StatusCell, 0, len(value.printers))
-	facts := make([]tool.Fact, 0, len(value.printers)*5)
+	facts := make([]tool.Fact, 0, len(value.printers)*6)
 	for _, item := range value.printers {
 		cells = append(cells, tool.StatusCell{
 			Label:  item.Info.Name,
@@ -316,38 +837,90 @@ func printersBlocks(value analysis) []tool.Block {
 			tool.Fact{Label: "状态", Value: item.State, Group: group},
 			tool.Fact{Label: "驱动", Value: driverDetail(item), Group: group},
 			tool.Fact{Label: "端口", Value: portDetail(item), Group: group},
-			tool.Fact{Label: "连接", Value: connectionLabel(item), Group: group},
+			tool.Fact{Label: "连接方式", Value: item.ConnectionKind, Group: group},
 		)
-		if item.Info.Shared || strings.TrimSpace(item.Info.ShareName) != "" {
-			facts = append(facts, tool.Fact{Label: "共享", Value: fallback(item.Info.ShareName, "是"), Group: group})
+		if label := connectionLabel(item); label != item.ConnectionKind {
+			facts = append(facts, tool.Fact{Label: "连接", Value: label, Group: group})
+		}
+		if item.NetworkIP != "" {
+			facts = append(facts, tool.Fact{
+				Label: "网络地址",
+				Value: joinNonEmpty(" · ", item.NetworkIP, item.NetworkHost),
+				Group: group,
+			})
+		}
+		if item.AltPort != nil {
+			facts = append(facts, tool.Fact{
+				Label: "系统网络端口",
+				Value: joinNonEmpty(" · ", item.AltPort.Name, item.NetworkIP),
+				Group: group,
+			})
+		}
+		if item.NeighborMAC != "" {
+			facts = append(facts, tool.Fact{
+				Label: "网卡 MAC",
+				Value: item.NeighborMAC,
+				Group: group,
+			})
 		}
 		if item.Info.Location != "" {
 			facts = append(facts, tool.Fact{Label: "位置", Value: item.Info.Location, Group: group})
 		}
+		if item.Info.Shared || strings.TrimSpace(item.Info.ShareName) != "" {
+			facts = append(facts, tool.Fact{Label: "共享", Value: fallback(item.Info.ShareName, "是"), Group: group})
+		}
+		if item.Info.QueuedJobs > 0 {
+			facts = append(facts, tool.Fact{
+				Label: "待处理任务",
+				Value: fmt.Sprintf("%d 个（%s）", item.Info.QueuedJobs, item.Info.JobSummary),
+				Group: group,
+			})
+		}
 	}
-	return []tool.Block{
+	blocks := []tool.Block{
 		statusGridBlock("打印机状态", cells, []tool.StatusLegendItem{
 			{Label: "连接正常", Tone: tool.ToneSuccess},
 			{Label: "需检查", Tone: tool.ToneWarning},
 			{Label: "异常", Tone: tool.ToneDanger},
-			{Label: "虚拟打印机", Tone: tool.ToneNeutral},
 		}),
 		factsBlock("打印机详情", facts),
 	}
+	// The diagnosis is the part the user actually needs when a printer fails.
+	causes := make([]tool.Fact, 0)
+	advice := make([]tool.Fact, 0)
+	for _, item := range value.printers {
+		for _, cause := range item.Causes {
+			causes = append(causes, tool.Fact{Label: "原因", Value: cause, Group: item.Info.Name})
+		}
+		for _, hint := range item.Advice {
+			advice = append(advice, tool.Fact{Label: "建议", Value: hint, Group: item.Info.Name})
+		}
+	}
+	if len(causes) > 0 {
+		blocks = append(blocks, factsBlock("问题原因", causes))
+	}
+	if len(advice) > 0 {
+		blocks = append(blocks, factsBlock("处理建议", advice))
+	}
+	return blocks
 }
 
 func driversBlocks(value analysis) []tool.Block {
 	facts := make([]tool.Fact, 0)
 	usedDrivers := make(map[string]bool)
 	for _, item := range value.printers {
-		if item.Driver == nil || usedDrivers[strings.ToLower(item.Driver.Name)] {
+		if item.Driver == nil {
 			continue
 		}
-		usedDrivers[strings.ToLower(item.Driver.Name)] = true
+		key := strings.ToLower(item.Driver.Name)
+		if usedDrivers[key] {
+			continue
+		}
+		usedDrivers[key] = true
 		facts = append(facts, tool.Fact{
 			Label: item.Driver.Name,
 			Group: "打印驱动",
-			Value: joinNonEmpty(" · ", item.Driver.Manufacturer, driverVersion(item.Driver), item.Driver.Environment),
+			Value: driverSummaryLine(*item.Driver),
 		})
 	}
 	usedPorts := make(map[string]bool)
@@ -372,10 +945,16 @@ func driversBlocks(value analysis) []tool.Block {
 		})
 	}
 	for _, item := range value.snapshot.Devices {
+		if !isPrintQueueDevice(item) {
+			continue
+		}
+		if isVirtualDevice(item) {
+			continue
+		}
 		facts = append(facts, tool.Fact{
 			Label: fallback(item.Name, "未命名设备"),
 			Group: "硬件设备",
-			Value: joinNonEmpty(" · ", fallback(item.Status, "状态未知"), item.InstanceID),
+			Value: joinNonEmpty(" · ", deviceStatus(item), deviceClass(item)),
 		})
 	}
 	if len(facts) == 0 {
@@ -389,12 +968,78 @@ func driversBlocks(value analysis) []tool.Block {
 	return []tool.Block{factsBlock("驱动、端口与硬件", facts)}
 }
 
+// isPrintQueueDevice keeps the printer queues and drops unrelated devices
+// such as the phantom root queue.
+func isPrintQueueDevice(item deviceInfo) bool {
+	if strings.EqualFold(item.Class, "Printer") {
+		return true
+	}
+	return strings.EqualFold(item.Class, "PrintQueue") &&
+		!strings.Contains(strings.ToLower(item.Name), "根打印队列")
+}
+
+// isVirtualDevice drops the software-only printers so the hardware list
+// only shows queues that map to a physical device.
+func isVirtualDevice(item deviceInfo) bool {
+	text := strings.ToLower(item.Name + " " + item.InstanceID)
+	for _, marker := range []string{
+		"print to pdf",
+		"onenote",
+		"microsoft print to",
+		"microsoft xps",
+		"fax",
+		"send to",
+		"portprompt",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// deviceClass names the PnP device role. The instance id itself looks like
+// "SWD\PRINTENUM\{GUID}" and carries nothing the user can act on.
+func deviceClass(item deviceInfo) string {
+	if strings.EqualFold(item.Class, "PrintQueue") {
+		return "打印队列"
+	}
+	return "打印机设备"
+}
+
+// deviceStatus turns the PnP status into readable Chinese. A stopped spooler
+// makes every queue report "Unknown", which tells the user nothing.
+func deviceStatus(item deviceInfo) string {
+	status := strings.TrimSpace(item.Status)
+	switch strings.ToLower(status) {
+	case "":
+		return "状态未知"
+	case "unknown":
+		return "状态未知"
+	case "ok":
+		return "正常"
+	case "error":
+		return "异常"
+	case "degraded":
+		return "性能下降"
+	case "warning":
+		return "有警告"
+	}
+	return status
+}
 func driverDetail(item printerAnalysis) string {
 	name := fallback(item.Info.DriverName, "未登记")
-	if item.Driver == nil {
-		return item.DriverState + " · " + name
+	if item.Driver != nil {
+		name = item.Driver.Name
 	}
-	return joinNonEmpty(" · ", item.DriverState, name, driverVersion(item.Driver), item.Driver.Environment)
+	parts := []string{item.DriverState, name}
+	if item.Driver != nil {
+		parts = append(parts, driverVersion(item.Driver))
+		if item.Driver.Manufacturer != "" {
+			parts = append(parts, item.Driver.Manufacturer)
+		}
+	}
+	return joinNonEmpty(" · ", parts...)
 }
 
 func driverVersion(value *driverInfo) string {
@@ -529,13 +1174,7 @@ func connectionSummary(value analysis) string {
 }
 
 func physicalPrinters(value analysis) []printerAnalysis {
-	out := make([]printerAnalysis, 0, value.physical)
-	for _, item := range value.printers {
-		if !item.Virtual {
-			out = append(out, item)
-		}
-	}
-	return out
+	return value.printers
 }
 
 func defaultTone(value analysis) tool.Tone {
@@ -584,22 +1223,7 @@ func resultWarnings(value analysis) []string {
 		warnings = append(warnings, warning)
 	}
 	if !value.snapshot.Spooler.Found {
-		warnings = append(warnings, "未找到 Windows 打印后台处理程序 Spooler。")
-	} else if spoolerDown {
-		warnings = append(warnings, "打印后台处理程序 Spooler 未运行；打印管理接口和部分驱动、端口信息可能不可用。")
-	}
-	problems := make([]string, 0)
-	for _, item := range value.printers {
-		if item.Virtual {
-			continue
-		}
-		switch item.Tone {
-		case tool.ToneDanger, tool.ToneWarning:
-			problems = append(problems, item.Info.Name)
-		}
-	}
-	if len(problems) > 0 {
-		warnings = append(warnings, "以下打印机需要处理："+strings.Join(problems, "、")+"。")
+		warnings = append(warnings, "未找到 Windows 打印后台处理程序 Spooler，打印功能不可用。")
 	}
 	return uniqueStrings(warnings, 8)
 }

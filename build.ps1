@@ -159,7 +159,7 @@ $pluginSpecs = @(
     @{
         Name = "printer-check"
         Executable = "printer-check.exe"
-        Package = "printer-check-1.0.0.zip"
+        Package = "printer-check-1.1.0.zip"
         Author = "OpenTools"
         Homepage = "https://github.com/"
     }

@@ -105,7 +105,7 @@ function segmentStyle(value: number, item: MeterItem) {
       <div v-for="group in groupedFacts" :key="group.name" class="metric-fact-group">
         <span v-if="group.name" class="metric-fact-group__name">{{ group.name }}</span>
         <dl class="metric-fact-list">
-          <div v-for="fact in group.items" :key="`${group.name}-${fact.label}`" class="metric-fact">
+          <div v-for="(fact, index) in group.items" :key="`${group.name}-${index}`" class="metric-fact">
             <dt>{{ fact.label }}</dt>
             <dd>{{ fact.value }}</dd>
           </div>
@@ -237,7 +237,7 @@ function segmentStyle(value: number, item: MeterItem) {
 
 .metric-facts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 10px 16px;
 }
 
@@ -265,7 +265,7 @@ function segmentStyle(value: number, item: MeterItem) {
 
 .metric-fact {
   display: grid;
-  grid-template-columns: minmax(74px, auto) minmax(0, 1fr);
+  grid-template-columns: minmax(64px, 34%) minmax(0, 1fr);
   align-items: baseline;
   gap: 10px;
   border-radius: 8px;
@@ -280,6 +280,7 @@ function segmentStyle(value: number, item: MeterItem) {
   color: var(--muted);
   font-size: 12.5px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .metric-fact dd {

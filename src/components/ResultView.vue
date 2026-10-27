@@ -65,7 +65,12 @@ function isLightSection(section: ResultSection) {
   if (block.kind === "notice") return true;
   if (block.kind === "facts") {
     const items = factItems(block);
-    return items.length > 0 && items.length <= 4;
+    // Several groups in one facts block each need their own column, so the
+    // block only fits a half-width card while it holds a single group.
+    const groups = new Set(items.map((item) => item.group ?? ""));
+    if (items.length === 0 || items.length > 4 || groups.size > 1) return false;
+    // A long value needs the full row to stay on one line.
+    return !items.some((item) => item.value.length > 24);
   }
   if (block.kind === "meter") {
     const items = meterItems(block);
