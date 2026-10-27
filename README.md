@@ -120,7 +120,7 @@ Windows 数据采集使用系统自带的 PowerShell 5.1，不依赖 PowerShell 
 
 ## 打印机检测
 
-`hardware.printers` 是只读的打印机与打印驱动检查工具，专注于**真实打印机**并诊断连接失败的具体原因。虚拟打印机（如 Microsoft Print to PDF、OneNote、传真）会被识别并忽略，只在概要里给出被忽略的数量。
+`hardware.printers` 检查真实打印机、打印服务、驱动和端口，诊断连接失败的具体原因，并修复常见打印故障。虚拟打印机（如 Microsoft Print to PDF、OneNote、传真）会被识别并忽略，只在概要里给出被忽略的数量。
 
 工具分别采集 Windows 打印后台处理程序、打印管理接口、WMI、用户打印机注册表、打印驱动注册表、打印端口、PnP 设备和 ARP 邻居表，因此某个接口不可用时不会连带隐藏其他信息。即使 Spooler 已经停止，工具也会尽量从用户注册表列出已配置的打印机和默认打印机，并完成驱动核验。
 
@@ -147,7 +147,19 @@ Windows 数据采集使用系统自带的 PowerShell 5.1，不依赖 PowerShell 
 
 驱动文件按驱动包真实位置校验：Windows 只登记文件名，实际文件在驱动仓库（DriverStore）的架构与语言子目录中，直接查 System32 会把正常驱动误判为“文件缺失”。
 
-工具不会启动或停止打印服务，不会安装、更新或删除驱动，也不会修改任何打印机设置。网络探测只连接打印机的标准端口，超时固定且不会进行端口扫描。
+### 一键修复
+
+检测结果会根据当前问题提供对应按钮，每次执行前都会重新检查问题是否仍然存在：
+
+- 启动打印服务 Spooler；
+- 把打印服务改为开机自动启动；
+- 取消指定打印队列的脱机状态；
+- 清空指定队列中卡住的任务（未打印内容会丢失）；
+- 把绑定在本地端口的队列改用已识别的 TCP/IP 打印机端口。
+
+修复会修改 Windows 打印设置，因此由插件通过系统自带的 Windows PowerShell 5.1 请求管理员权限，并在执行前显示 UAC 确认。修复参数保存在临时 JSON 文件中，不会拼接进命令行。驱动缺失、更新或安装仍需要打印机厂商的安装程序，本工具不会自动替换驱动。
+
+检测阶段的网络探测只连接打印机的标准端口，超时固定且不会进行端口扫描。
 
 ## 工具商店来源
 
@@ -171,7 +183,7 @@ catalog.json
 packages\network-config-1.2.0.zip
 packages\lan-inventory-1.3.0.zip
 packages\system-inventory-1.3.0.zip
-packages\printer-check-1.1.0.zip
+packages\printer-check-1.2.0.zip
 ```
 
 `catalog.json` 里的 `downloadUrl` 用**相对路径**，宿主会相对目录地址解析；`sha256` 由发布脚本自动计算。

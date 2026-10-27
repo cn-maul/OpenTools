@@ -592,7 +592,7 @@ func diagnose(value snapshot, item printerAnalysis, all snapshot) (tool.Tone, st
 
 	if item.Device != nil {
 		problem := strings.TrimSpace(item.Device.Problem)
-		if problem != "" && problem != "0" && !strings.EqualFold(problem, "CM_PROB_PHANTOM") {
+		if isDeviceProblem(problem) {
 			causes = append(causes, "设备状态异常："+problem)
 			advice = append(advice, "在设备管理器中检查该打印机设备并重新扫描硬件改动")
 		}
@@ -653,6 +653,21 @@ func driverStateLabel(state string) string {
 	default:
 		return state
 	}
+}
+
+// isDeviceProblem reports whether a PnP problem code means a real fault.
+// "CM_PROB_NONE" and "0" both mean the device is healthy, and a phantom
+// device is a leftover entry rather than a fault worth reporting.
+func isDeviceProblem(problem string) bool {
+	problem = strings.TrimSpace(problem)
+	if problem == "" || problem == "0" {
+		return false
+	}
+	if strings.EqualFold(problem, "CM_PROB_NONE") ||
+		strings.EqualFold(problem, "CM_PROB_PHANTOM") {
+		return false
+	}
+	return true
 }
 
 func driverLabel(item printerAnalysis) string {
@@ -905,6 +920,85 @@ func printersBlocks(value analysis) []tool.Block {
 	return blocks
 }
 
+// repairs turns the diagnosis into concrete fixes. Only problems the tool
+// can actually repair are offered; a missing driver needs the vendor
+// installer and is left as advice.
+func repairs(value analysis) []repair {
+	out := make([]repair, 0, 4)
+	spooler := value.snapshot.Spooler
+	if !spooler.Found {
+		return out
+	}
+	if !strings.EqualFold(spooler.Status, "Running") {
+		out = append(out, repair{
+			Kind:    repairStartSpooler,
+			Label:   "启动打印服务",
+			Tone:    tool.ToneSuccess,
+			Confirm: "将启动 Windows 打印后台处理程序（Print Spooler）。此操作需要管理员权限，系统会弹出 UAC 确认。",
+		})
+	}
+	// The start type is independent of the current state: a spooler that is
+	// running but starts manually still stops again on the next reboot.
+	if !strings.EqualFold(spooler.StartType, "Automatic") {
+		out = append(out, repair{
+			Kind:      repairSetSpoolerStartType,
+			Label:     "开机自动启动打印服务",
+			Tone:      tool.ToneWarning,
+			Confirm:   "将把打印后台处理程序的启动类型改为「自动」，开机即启动。此操作需要管理员权限。",
+			StartType: "Automatic",
+		})
+	}
+	for _, item := range value.printers {
+		out = append(out, printerRepairs(item)...)
+	}
+	return out
+}
+
+// printerRepairs lists the fixes for one printer queue.
+func printerRepairs(item printerAnalysis) []repair {
+	out := make([]repair, 0, 3)
+	name := item.Info.Name
+	if item.Info.WorkOffline {
+		out = append(out, repair{
+			Kind:    repairClearOffline,
+			Label:   "取消「" + name + "」的脱机状态",
+			Tone:    tool.ToneWarning,
+			Confirm: "将把打印队列「" + name + "」从脱机状态改回在线。此操作需要管理员权限。",
+			Printer: name,
+		})
+	}
+	if item.Info.QueuedJobs > 0 {
+		out = append(out, repair{
+			Kind:    repairClearJobs,
+			Label:   "清空「" + name + "」的卡住任务",
+			Tone:    tool.ToneWarning,
+			Confirm: "将删除打印队列「" + name + "」中 " + fmt.Sprint(item.Info.QueuedJobs) + " 个待处理任务，未打印的内容会丢失。",
+			Printer: name,
+		})
+	}
+	// A queue bound to a local port can never reach a network printer.
+	// Rebinding it to the TCP/IP port Windows already knows is the fix.
+	if item.AltPort != nil && item.NetworkIP != "" {
+		port := item.AltPort.Port
+		if port <= 0 {
+			port = 9100
+		}
+		out = append(out, repair{
+			Kind:  repairRebindPort,
+			Label: "把「" + name + "」改用 TCP/IP 端口",
+			Tone:  tool.ToneSuccess,
+			Confirm: "将把打印队列「" + name + "」从本地端口 " + item.Info.PortName +
+				" 改为 TCP/IP 端口 " + item.AltPort.Name + "（" + item.NetworkIP + ":" +
+				strconv.Itoa(port) + "）。此操作需要管理员权限。",
+			Printer:    name,
+			PortName:   item.AltPort.Name,
+			Host:       item.NetworkIP,
+			PortNumber: port,
+		})
+	}
+	return out
+}
+
 func driversBlocks(value analysis) []tool.Block {
 	facts := make([]tool.Fact, 0)
 	usedDrivers := make(map[string]bool)
@@ -935,8 +1029,8 @@ func driversBlocks(value analysis) []tool.Block {
 			number = " · TCP " + strconv.Itoa(item.Port.Port)
 		}
 		protocol := ""
-		if item.Port.Protocol != "" {
-			protocol = " · " + item.Port.Protocol
+		if name := portProtocol(item.Port.Protocol); name != "" {
+			protocol = " · " + name
 		}
 		facts = append(facts, tool.Fact{
 			Label: item.Port.Name,
@@ -1063,10 +1157,31 @@ func portDetail(item printerAnalysis) string {
 	if item.Port.Port > 0 {
 		parts = append(parts, "TCP "+strconv.Itoa(item.Port.Port))
 	}
-	if item.Port.Protocol != "" {
-		parts = append(parts, item.Port.Protocol)
+	if protocol := portProtocol(item.Port.Protocol); protocol != "" {
+		parts = append(parts, protocol)
 	}
 	return strings.Join(parts, " · ")
+}
+
+// portProtocol turns the registry protocol code into a readable name. The
+// print management API returns names, but the registry fallback returns
+// raw numbers.
+func portProtocol(value string) string {
+	switch strings.TrimSpace(value) {
+	case "", "0":
+		return ""
+	case "1", "2":
+		return "RAW"
+	case "3":
+		return "LPR"
+	}
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "RAW":
+		return "RAW"
+	case "LPR":
+		return "LPR"
+	}
+	return value
 }
 
 func serviceTone(value spoolerInfo) tool.Tone {

@@ -132,7 +132,12 @@ if ($result.printers.Count -eq 0) {
             if ($seen.ContainsKey($property.Name)) { continue }
             $seen[$property.Name] = $true
             $parts = ([string]$property.Value) -split ","
+            # The per-user registry keeps the port the queue had when it was
+            # created, so it is often a stale local port. The machine wide
+            # printer key holds the port the queue actually uses.
             $port = if ($parts.Count -ge 2) { $parts[1] } else { "" }
+            $machinePort = Get-ItemProperty -LiteralPath ("HKLM:\SYSTEM\CurrentControlSet\Control\Print\Printers\" + $property.Name) -ErrorAction SilentlyContinue
+            if ($machinePort -and $machinePort.Port) { $port = [string]$machinePort.Port }
             $result.printers += [ordered]@{
                 name = [string]$property.Name
                 driverName = ""

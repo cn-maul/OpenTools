@@ -97,6 +97,9 @@ function showArrayDraft() {
 const widget = computed(() => props.schema["x-ui"]?.widget ?? "");
 const placeholder = computed(() => props.schema["x-ui"]?.placeholder ?? "");
 const fieldId = computed(() => `field-${props.name}-${depth.value}`);
+// A hidden field carries a value without showing a control. It is used by
+// result actions that need to pass structured data back into the tool.
+const hidden = computed(() => widget.value === "hidden");
 const wide = computed(
   () => widget.value === "code" || widget.value === "textarea" || Boolean(props.schema["x-ui"]?.rows),
 );
@@ -131,6 +134,13 @@ function defaults(schema: UISchema): Record<string, unknown> {
 </script>
 
 <template>
+  <input
+    v-if="hidden"
+    type="hidden"
+    :name="name"
+    :value="String(value ?? '')"
+  />
+
   <fieldset v-if="schema.type === 'object'" class="schema-object">
     <legend v-if="schema.title">
       {{ schema.title }}
@@ -150,7 +160,7 @@ function defaults(schema: UISchema): Record<string, unknown> {
   </fieldset>
 
   <div
-    v-else
+    v-else-if="!hidden"
     class="textfield field"
     :class="{
       'textfield--full-width': true,
