@@ -50,6 +50,8 @@ const settingsSaving = ref(false);
 const settingsError = ref("");
 const storeURL = ref("");
 const savedStoreURL = ref("");
+const giteeStoreURL =
+  "https://gitee.com/dogge2333/opentools-store/raw/master/catalog.json";
 const theme = ref<"light" | "dark">(
   document.documentElement.dataset.theme === "dark" ? "dark" : "light",
 );
@@ -192,6 +194,11 @@ async function saveSettings() {
   }
 }
 
+async function useGiteeStore() {
+  storeURL.value = giteeStoreURL;
+  await saveSettings();
+}
+
 function applyTheme(value: "light" | "dark") {
   theme.value = value;
   document.documentElement.dataset.theme = value;
@@ -206,13 +213,15 @@ function toggleTheme() {
   applyTheme(theme.value === "dark" ? "light" : "dark");
 }
 
-async function refreshTools() {
+async function refreshTools(keepView = false) {
+  const previousView = view.value;
   tools.value = await listTools();
   if (!selectedToolId.value && tools.value[0]) selectTool(tools.value[0].id);
   if (selectedToolId.value && !tools.value.some((tool) => tool.id === selectedToolId.value)) {
     selectedToolId.value = "";
     replaceValues({});
   }
+  if (keepView) view.value = previousView;
 }
 
 async function install(item: ToolPackage) {
@@ -220,7 +229,7 @@ async function install(item: ToolPackage) {
   error.value = "";
   try {
     store.value = await installPlugin(item.definition.id);
-    await refreshTools();
+    await refreshTools(true);
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause);
   } finally {
@@ -233,7 +242,7 @@ async function uninstall(item: ToolPackage) {
   error.value = "";
   try {
     store.value = await uninstallPlugin(item.definition.id);
-    await refreshTools();
+    await refreshTools(true);
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause);
   } finally {
@@ -313,6 +322,7 @@ function loadInput(job: Job) {
   selectedJobId.value = job.id;
   const tool = tools.value.find((item) => item.id === job.toolId);
   if (!tool) return;
+  view.value = "tools";
   selectedToolId.value = tool.id;
   replaceValues({ ...defaults(tool.input), ...job.input });
 }
@@ -402,7 +412,6 @@ onBeforeUnmount(() => {
 watch(selectedToolId, () => {
   error.value = "";
   fieldError.value = null;
-  if (selectedToolId.value) view.value = "tools";
 });
 </script>
 
@@ -769,7 +778,7 @@ watch(selectedToolId, () => {
       @confirm="saveSettings"
     >
       <div class="settings-form">
-        <label class="field settings-field">
+        <div class="field settings-field">
           <span class="field-heading">
             <span>工具商店 URL</span>
             <span class="settings-optional">可选</span>
@@ -779,10 +788,24 @@ watch(selectedToolId, () => {
             placeholder="https://example.com/opentools/catalog.json"
             :disabled="settingsSaving"
           />
-          <span class="field-description">
-            留空时使用程序自带目录。多个地址可用英文分号分隔，也支持本地文件路径。
+          <div class="settings-preset">
+            <div class="settings-preset__label">
+              <span class="settings-preset__name">Gitee 源</span>
+              <code>{{ giteeStoreURL }}</code>
+            </div>
+            <HeroButton
+              variant="secondary"
+              size="sm"
+              :disabled="settingsSaving"
+              @click="useGiteeStore"
+            >
+              使用
+            </HeroButton>
+          </div>
+          <span class="settings-hint">
+            留空时使用程序自带目录（联网环境自动回退到 Gitee 源）。多个地址可用英文分号分隔，也支持本地文件路径。
           </span>
-        </label>
+        </div>
         <div v-if="settingsError" class="settings-error" role="alert">
           <HeroChip color="danger" variant="soft" size="sm">保存失败</HeroChip>
           <span>{{ settingsError }}</span>

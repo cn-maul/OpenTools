@@ -120,4 +120,68 @@ Windows 数据采集使用系统自带的 PowerShell 5.1，不依赖 PowerShell 
 
 ## 工具商店来源
 
-默认情况下宿主会在 exe 旁边的 `store/catalog.json` 发现目录。打开左侧栏的**设置**可以配置一个或多个用英文分号分隔的目录地址（HTTP、HTTPS 或本地文件路径）。该设置保存在数据目录的 `plugin-sources.json` 中，清空即可恢复本地发现。`OPENTOOLS_CATALOG_URL` 环境变量仍然可用作便携回退。所有目录都不可达时，已安装的工具照常可用。
+宿主按以下顺序确定目录来源：
+
+1. 用户在**设置**中保存的地址（`data\plugin-sources.json`，多个地址用英文分号分隔，支持 HTTP、HTTPS 和本地路径）；
+2. `OPENTOOLS_CATALOG_URL` 环境变量；
+3. exe 旁边的 `store\catalog.json`（离线便携模式）；
+4. 线上默认源 `https://gitee.com/dogge2333/opentools-store/raw/master/catalog.json`。
+
+设置面板在 URL 输入框下方固定展示 Gitee 源，点**使用**即可把输入框切换成该地址并立即保存刷新，无需手工粘贴。
+
+所有来源都不可达时，已安装的工具照常可用；商店列表会带上警告但不影响本地工具运行。
+
+## 发布工具到 Gitee 商店
+
+线上商店仓库为 [dogge2333/opentools-store](https://gitee.com/dogge2333/opentools-store)，目录结构：
+
+```text
+catalog.json
+packages\network-config-1.2.0.zip
+packages\lan-inventory-1.3.0.zip
+packages\system-inventory-1.2.0.zip
+```
+
+`catalog.json` 里的 `downloadUrl` 用**相对路径**，宿主会相对目录地址解析；`sha256` 由发布脚本自动计算。
+
+### 升级某个工具
+
+只需要改插件源码里的版本常量，然后重新发布：
+
+1. 修改 `tools\<name>\tool.go` 中的 `const version = "x.y.z"`；
+2. 运行发布脚本：
+
+```powershell
+$env:OPENTOOLS_GITEE_TOKEN = "<你的 Gitee token>"
+.\publish-store.ps1
+```
+
+脚本会依次完成：编译全部插件 → 用 `describe` 读取新版本号生成 `manifest.json` → 打 ZIP → 重算 SHA256 → 生成 `catalog.json` → 上传到 Gitee（新文件用 POST，已存在的文件自动取 blob SHA 后 PUT 覆盖）。
+
+老版本 ZIP 不会被删除，用户端只要刷新商店就会看到「更新」按钮（宿主按版本号比较，`catalog.json` 里只保留每个工具的最新条目）。
+
+### 新增工具
+
+1. 在 `tools\<name>` 实现 `tool.Tool`，在 `cmd\plugins\<name>` 加入 `pluginproto.Serve(...)` 入口；
+2. 在 `publish-store.ps1` 的 `$toolSpecs` 里加一行（`Name` + `Executable`）；
+3. 跑 `publish-store.ps1`。
+
+### 本地预览
+
+不想上传时加 `-SkipUpload`，脚本只在仓库根目录生成 `store\`，可以直接用 `build.ps1` 或任意静态服务器验证。加 `-SkipBuild` 可以复用上一次编译出的 `build\plugins` 可执行文件。
+
+发布前建议先做一次离线验证：
+
+```powershell
+.\publish-store.ps1 -SkipUpload
+go run ./cmd/opentools store --refresh
+go run ./cmd/opentools install <tool-id>
+```
+
+### 校验发布结果
+
+```powershell
+curl.exe -L "https://gitee.com/dogge2333/opentools-store/raw/master/catalog.json"
+```
+
+注意 Gitee 的 raw 地址会 302 跳转到 `raw.giteeusercontent.com`，必须跟随重定向；宿主的 HTTP 客户端默认跟随，直接用浏览器或 `curl` 时记得加 `-L`。

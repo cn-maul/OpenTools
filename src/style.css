@@ -2389,6 +2389,50 @@ button {
   flex-direction: column;
 }
 
+.settings-preset {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  border-radius: 12px;
+  background: var(--surface-secondary);
+  padding: 8px 10px;
+}
+
+.settings-preset__label {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-preset__name {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.settings-preset__label code {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-preset .button {
+  flex: 0 0 auto;
+}
+
+.settings-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .settings-optional {
   color: var(--muted);
   font-family: var(--font-mono);
