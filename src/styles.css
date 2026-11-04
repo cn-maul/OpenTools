@@ -551,14 +551,6 @@ button {
   overflow: auto;
 }
 
-.app-result-pane.table-focus .app-result-content {
-  padding: 8px;
-}
-
-.app-result-pane.table-focus .app-stream {
-  min-height: 0;
-}
-
 /* Summary, blocks, actions */
 
 .app-result-summary {
@@ -1270,15 +1262,6 @@ button {
   color: var(--muted);
   font-size: 13px;
   padding: 7px 9px 3px;
-}
-
-.app-result-pane.table-focus .table__batch {
-  min-height: 40px;
-  padding-block: 5px 2px;
-}
-
-.app-result-pane.table-focus .table__cell {
-  padding-block: 6px;
 }
 
 .table__select {

@@ -24,12 +24,7 @@ type ResultViewProps = {
   onAction: (action: ResultAction) => void;
 };
 
-const TABBED_TOOLS = new Set([
-  "system.startup-manager",
-  "hardware.disk-health",
-  "system.crash-diagnostics",
-  "system.performance-checkup",
-]);
+const TABBED_TOOLS = new Set(["system.crash-diagnostics"]);
 
 function statusLabel(status: string) {
   return (
@@ -95,8 +90,6 @@ function gridLabeled(block: Block): boolean {
 }
 
 function shortSectionTitle(toolID: string | undefined, section: ResultSection) {
-  if (toolID === "hardware.disk-health" && section.id === "disks") return "物理磁盘";
-  if (section.id === "volumes") return "分区空间";
   return (
     {
       overview: "概览",
@@ -220,8 +213,6 @@ export default function ResultView({ job, tool, onAction }: ResultViewProps) {
     sections.length === 1 &&
     (sections[0]?.blocks?.length ?? 0) === 1 &&
     sections[0]?.blocks?.[0]?.kind === "table";
-  const focusedTable = singleTable && tool?.id === "system.app-uninstaller";
-
   const progress = (() => {
     if (!job) return 0;
     const { done, total } = job.progress;
@@ -237,10 +228,6 @@ export default function ResultView({ job, tool, onAction }: ResultViewProps) {
   })();
 
   function defaultSectionID(list: ResultSection[]) {
-    if (tool?.id === "system.startup-manager") {
-      const registry = list.find((section) => section.id === "registry");
-      if (registry) return registry.id;
-    }
     return list[0]?.id ?? "";
   }
 
@@ -358,7 +345,7 @@ export default function ResultView({ job, tool, onAction }: ResultViewProps) {
   const toolActions = job?.result?.actions ?? [];
 
   return (
-    <div className={`app-result-pane ${focusedTable ? "table-focus" : ""}`}>
+    <div className="app-result-pane">
       {!job ? (
         <div className="app-result-scroll">
           <div className="app-result-empty">
@@ -383,7 +370,7 @@ export default function ResultView({ job, tool, onAction }: ResultViewProps) {
         </div>
       ) : (
         <>
-          {!focusedTable && (
+          {(
             <div className="app-result-status">
               <span className="app-result-job-id mono">{job.id}</span>
               <div className="app-result-head-status">
@@ -423,7 +410,7 @@ export default function ResultView({ job, tool, onAction }: ResultViewProps) {
           >
             {sections.length > 0 ? (
               <>
-                {job.result && !focusedTable && (
+                {job.result && (
                   <p className="app-result-summary compact">{job.result.summary}</p>
                 )}
 
@@ -508,7 +495,7 @@ export default function ResultView({ job, tool, onAction }: ResultViewProps) {
                   ))}
                 </div>
 
-                {!focusedTable && Boolean(job.result?.warnings?.length) && (
+                {Boolean(job.result?.warnings?.length) && (
                   <div className="app-result-warnings">
                     {(job.result?.warnings ?? []).map((warning) => (
                       <Alert key={warning} status="warning">
@@ -521,7 +508,7 @@ export default function ResultView({ job, tool, onAction }: ResultViewProps) {
                   </div>
                 )}
 
-                {!focusedTable && <ArtifactsView job={job} />}
+                <ArtifactsView job={job} />
 
                 {toolActions.length > 0 && (
                   <div className="app-result-actions">
@@ -547,7 +534,7 @@ export default function ResultView({ job, tool, onAction }: ResultViewProps) {
                   </div>
                 )}
 
-                {job.result && !focusedTable && (
+                {job.result && (
                   <div className="app-result-export">
                     <Button variant="ghost" size="sm" onPress={() => exportResult(job)}>
                       {copied === "export" ? "已导出" : "导出结果"}
@@ -663,7 +650,7 @@ export default function ResultView({ job, tool, onAction }: ResultViewProps) {
             )}
           </div>
 
-          {(job.error || (!focusedTable && Boolean(job.logs?.length))) && (
+          {(job.error || Boolean(job.logs?.length)) && (
             <div className="app-result-tail">
               {job.error && (
                 <Alert status="danger">

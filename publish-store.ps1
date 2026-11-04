@@ -73,11 +73,7 @@ if (-not $SkipBuild) {
             @{ Name = "laninventory"; Output = "lan-inventory" },
             @{ Name = "systemconfig"; Output = "system-inventory" },
             @{ Name = "printercheck"; Output = "printer-check" },
-            @{ Name = "diskhealth"; Output = "disk-health" },
             @{ Name = "crashdiag"; Output = "crash-diagnostics" },
-            @{ Name = "perfcheckup"; Output = "performance-checkup" },
-            @{ Name = "uninstaller"; Output = "app-uninstaller" },
-            @{ Name = "startupmgr"; Output = "startup-manager" },
             @{ Name = "govdoc"; Output = "govdoc-format" }
         )) {
             $env:GOOS = $goos
@@ -100,11 +96,7 @@ $toolSpecs = @(
     @{ Name = "lan-inventory"; Executable = "lan-inventory.exe" },
     @{ Name = "system-inventory"; Executable = "system-inventory.exe" },
     @{ Name = "printer-check"; Executable = "printer-check.exe" },
-    @{ Name = "disk-health"; Executable = "disk-health.exe" },
     @{ Name = "crash-diagnostics"; Executable = "crash-diagnostics.exe" },
-    @{ Name = "performance-checkup"; Executable = "performance-checkup.exe" },
-    @{ Name = "app-uninstaller"; Executable = "app-uninstaller.exe" },
-    @{ Name = "startup-manager"; Executable = "startup-manager.exe" },
     @{ Name = "govdoc-format"; Executable = "govdoc-format.exe" }
 )
 $catalogTools = @()
