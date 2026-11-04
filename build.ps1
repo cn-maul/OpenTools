@@ -104,7 +104,13 @@ Invoke-Checked {
         @{ Name = "networkconfig"; Output = "network-config" },
         @{ Name = "laninventory"; Output = "lan-inventory" },
         @{ Name = "systemconfig"; Output = "system-inventory" },
-        @{ Name = "printercheck"; Output = "printer-check" }
+        @{ Name = "printercheck"; Output = "printer-check" },
+        @{ Name = "diskhealth"; Output = "disk-health" },
+        @{ Name = "crashdiag"; Output = "crash-diagnostics" },
+        @{ Name = "perfcheckup"; Output = "performance-checkup" },
+        @{ Name = "uninstaller"; Output = "app-uninstaller" },
+        @{ Name = "startupmgr"; Output = "startup-manager" },
+        @{ Name = "govdoc"; Output = "govdoc-format" }
     )) {
         $env:GOOS = $goos
         $env:GOARCH = $goarch
@@ -161,6 +167,48 @@ $pluginSpecs = @(
         Executable = "printer-check.exe"
         Package = "printer-check-1.2.0.zip"
         Author = "OpenTools"
+        Homepage = "https://github.com/"
+    },
+    @{
+        Name = "disk-health"
+        Executable = "disk-health.exe"
+        Package = "disk-health-1.0.0.zip"
+        Author = "OpenTools"
+        Homepage = "https://github.com/"
+    },
+    @{
+        Name = "crash-diagnostics"
+        Executable = "crash-diagnostics.exe"
+        Package = "crash-diagnostics-1.0.0.zip"
+        Author = "OpenTools"
+        Homepage = "https://github.com/"
+    },
+    @{
+        Name = "performance-checkup"
+        Executable = "performance-checkup.exe"
+        Package = "performance-checkup-1.0.0.zip"
+        Author = "OpenTools"
+        Homepage = "https://github.com/"
+    },
+    @{
+        Name = "app-uninstaller"
+        Executable = "app-uninstaller.exe"
+        Package = "app-uninstaller-1.0.6.zip"
+        Author = "OpenTools"
+        Homepage = "https://github.com/"
+    },
+    @{
+        Name = "startup-manager"
+        Executable = "startup-manager.exe"
+        Package = "startup-manager-1.0.1.zip"
+        Author = "OpenTools"
+        Homepage = "https://github.com/"
+    },
+    @{
+        Name = "govdoc-format"
+        Executable = "govdoc-format.exe"
+        Package = "govdoc-format-1.0.0.zip"
+        Author = "GovDoc"
         Homepage = "https://github.com/"
     }
 )
