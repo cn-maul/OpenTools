@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -35,12 +33,12 @@ func (Tool) Definition() tool.Definition {
 		ID:          "network.lan-addresses",
 		Name:        "局域网可用 IP",
 		Summary:     "识别当前局域网，扫描在线主机和空闲 IPv4 地址。",
-		Description: "自动选择正在联网的物理网卡与私有 IPv4 网段，也可手动输入 CIDR。扫描使用 ARP 邻居表和并发 TCP 探测，只读、不修改网络配置；输出在线主机、空闲地址和 CSV 报告。",
+		Description: "自动选择正在联网的物理网卡与私有 IPv4 网段，也可手动输入 CIDR。扫描使用 ARP 邻居表和并发 TCP 探测，只读、不修改网络配置；输出地址分布网格与在线设备明细。",
 		Category:    "网络工具",
 		Icon:        "lan",
 		Keywords:    []string{"局域网", "LAN", "IP", "网段", "在线主机", "空闲地址", "ARP", "扫描"},
 		Version:     version,
-		Effects:     []tool.Effect{tool.EffectReadFiles, tool.EffectNetwork, tool.EffectWriteFiles},
+		Effects:     []tool.Effect{tool.EffectReadFiles, tool.EffectNetwork},
 		Input: tool.Object(map[string]*tool.Schema{
 			"network": tool.String("扫描范围", "留空时自动识别当前联网的主网卡与网段；也可填写 192.168.1.0/24。").
 				WithWidget("", "例如 192.168.1.0/24，留空自动识别"),
@@ -197,36 +195,10 @@ func (Tool) Run(ctx context.Context, input tool.Input, env tool.Environment, rep
 		State:  tool.SectionReady,
 		Blocks: blocks,
 	})
-
-	csvPath := ""
-	if len(hosts) > 0 {
-		name := fmt.Sprintf("lan-scan-%s.csv", time.Now().Format("20060102-150405"))
-		data := buildCSVReport(target, addresses, hosts, free)
-		path := filepath.Join(env.WorkDir, name)
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			report.Log("warn", fmt.Sprintf("写出 CSV 报告失败：%v", err))
-		} else if _, _, err := tool.ResolveArtifact(env, path); err != nil {
-			report.Log("warn", fmt.Sprintf("CSV 报告不可用：%v", err))
-		} else {
-			csvPath = path
-			report.Log("info", "CSV 报告已生成："+name)
-		}
-	}
-	result := tool.Result{
+	return tool.Result{
 		Summary: fmt.Sprintf("%s：在线 %d，空闲 %d", target.CIDR, len(hosts), len(free)),
 		Blocks:  blocks,
-	}
-	if csvPath != "" {
-		artifactPath, _, err := tool.ResolveArtifact(env, csvPath)
-		if err == nil {
-			result.Artifacts = []tool.Artifact{{
-				Name: filepath.Base(csvPath),
-				Path: artifactPath,
-				MIME: "text/csv",
-			}}
-		}
-	}
-	return result, nil
+	}, nil
 }
 
 // onlineHostsTable renders the readable companion to the address grid: one
@@ -274,60 +246,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-// buildCSVReport writes every scanned address with its verdict, so the file
-// doubles as an IP-planning worksheet.
-func buildCSVReport(target scanTarget, addresses []netip.Addr, hosts []hostResult, free []string) []byte {
-	detail := make(map[string]hostResult, len(hosts))
-	for _, host := range hosts {
-		detail[host.Address] = host
-	}
-	freeSet := make(map[string]bool, len(free))
-	for _, address := range free {
-		freeSet[address] = true
-	}
-	var b strings.Builder
-	b.WriteString("\xEF\xBB\xBF")
-	b.WriteString("地址,状态,设备类型,厂商,延迟(ms),探测方式,开放端口,MAC\n")
-	for _, address := range addresses {
-		key := address.String()
-		status, device, vendor, rtt, method, ports, mac := "空闲", "", "", "", "", "", ""
-		if key == strings.TrimSpace(target.Address) {
-			status, device = "本机", "本机地址"
-		} else if host, ok := detail[key]; ok {
-			fp := host.Fingerprint
-			status = "在线"
-			device = firstNonEmpty(fp.OSGuess, "未知在线设备")
-			vendor = fp.Vendor
-			if host.RTT > 0 {
-				rtt = fmt.Sprintf("%.0f", float64(host.RTT.Microseconds())/1000)
-			}
-			method = host.Method
-			ports = portsLabel(host.OpenPorts)
-			mac = host.MAC
-		} else if !freeSet[key] {
-			status = "在线"
-		}
-		fields := []string{key, status, device, vendor, rtt, method, ports, mac}
-		for i, field := range fields {
-			if i > 0 {
-				b.WriteByte(',')
-			}
-			b.WriteString(csvField(field))
-		}
-		b.WriteByte('\n')
-	}
-	return []byte(b.String())
-}
-
-// csvField quotes a value when it contains a comma, quote or newline, and
-// doubles embedded quotes per RFC 4180.
-func csvField(value string) string {
-	if !strings.ContainsAny(value, ",\"\n\r") {
-		return value
-	}
-	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }
 
 func selectTarget(ctx context.Context, raw string) (scanTarget, error) {

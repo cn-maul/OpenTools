@@ -19,7 +19,7 @@ import (
 	"opentools/pkg/tool"
 )
 
-const version = "1.3.0"
+const version = "1.3.1"
 
 // Tool detects the primary adapter, backs up its network settings and
 // benchmarks DNS providers.
@@ -28,13 +28,18 @@ type Tool struct{}
 // New returns the network configuration tool.
 func New() Tool { return Tool{} }
 
+// defaultRounds is the fixed probe count per DNS server. It is a compile-time
+// setting rather than a form parameter: a benchmark should be one click, and
+// three rounds already separate usable servers from dead ones.
+const defaultRounds = 3
+
 // Definition implements tool.Tool.
 func (Tool) Definition() tool.Definition {
 	return tool.Definition{
 		ID:          "network.dns-switcher",
 		Name:        "DNS 测速",
 		Summary:     "测速常用国内 DNS，结果按延迟排序，一行一个切换按钮。",
-		Description: "自动识别主网卡并备份其配置，对每个 DNS 服务并发发送多轮解析查询。测速结果按成功率与中位延迟排序，可用的服务行内提供一键切换按钮；切换前自动备份，只改 DNS，不动 IP 与网关。",
+		Description: "自动识别主网卡并备份其配置，对每个 DNS 服务并发发送解析查询。测速结果按成功率与中位延迟排序，可用的服务行内提供一键切换按钮；切换前自动备份，只改 DNS，不动 IP 与网关。",
 		Category:    "网络工具",
 		Icon:        "network",
 		Keywords:    []string{"DNS", "测速", "切换", "网卡", "延迟", "解析"},
@@ -45,18 +50,12 @@ func (Tool) Definition() tool.Definition {
 			tool.EffectNetwork,
 			tool.EffectSystemSettings,
 		},
-		Input: tool.Object(map[string]*tool.Schema{
-			"rounds": tool.Number("测速轮次", "对每个 DNS 服务重复查询的次数，轮次越多结果越稳定，耗时也越长。").
-				WithDefault(3).
-				WithMin(1).
-				WithMax(8),
-		}),
+		Input: tool.Object(map[string]*tool.Schema{}),
 	}
 }
 
 type params struct {
-	Rounds   float64 `json:"rounds"`
-	Provider string  `json:"provider"`
+	Provider string `json:"provider"`
 }
 
 type backup struct {
@@ -179,11 +178,7 @@ func (Tool) Run(ctx context.Context, input tool.Input, env tool.Environment, rep
 	if err != nil {
 		return tool.Result{}, err
 	}
-	rounds := int(p.Rounds)
-	if rounds <= 0 {
-		rounds = 3
-	}
-	return benchmarkResult(ctx, item, rounds, report)
+	return benchmarkResult(ctx, item, defaultRounds, report)
 }
 
 func itemIPv4(item adapter) []string {

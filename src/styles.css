@@ -1150,13 +1150,15 @@ button {
 
 /* Result tables */
 
+/* HeroUI Table (react-aria) renders the real <table>; the styles here only
+   constrain layout inside the result pane. Cell typography, row hover and
+   row separators come from the HeroUI table cascade layer. */
+
 .app-result-pane .table-root {
   max-height: 390px;
-  overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
   background: var(--surface-secondary);
-  padding: 3px;
 }
 
 .app-result-pane .table__scroll-container {
@@ -1165,41 +1167,7 @@ button {
 }
 
 .app-result-pane .table__content {
-  width: 100%;
   table-layout: fixed;
-  border-collapse: separate;
-  border-spacing: 0;
-  font-size: 13px;
-}
-
-.app-result-pane .table__column {
-  position: sticky;
-  top: 0;
-  z-index: 4;
-  background: var(--surface-secondary);
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  padding: 8px 10px;
-  text-align: left;
-  white-space: nowrap;
-}
-
-.app-result-pane .table__cell {
-  max-width: none;
-  max-height: none;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  background: var(--surface);
-  font-size: 14px;
-  padding: 8px 10px;
-  vertical-align: top;
-}
-
-.app-result-pane .table__row:hover .table__cell,
-.app-result-pane .table__row[data-hovered="true"] .table__cell {
-  background: color-mix(in oklab, var(--surface) 90%, var(--surface-secondary));
 }
 
 .app-result-pane .table__cell:first-child {
@@ -1219,24 +1187,18 @@ button {
   max-height: none;
   border: 0;
   background: transparent;
-  padding: 0;
 }
 
 .app-stream-item .table__scroll-container {
   max-height: 168px;
 }
 
-.app-stream-item .table__content {
+.app-table-empty {
+  display: block;
+  padding: 14px 10px;
+  color: var(--muted);
   font-size: 13px;
-}
-
-.app-stream-item .table__column {
-  padding: 7px 9px;
-}
-
-.app-stream-item .table__cell {
-  max-width: none;
-  padding: 7px 9px;
+  text-align: center;
 }
 
 .table__cell-with-icon {

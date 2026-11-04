@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { Button, Checkbox, Switch } from "@heroui/react";
+import { Button, Checkbox, Switch, Table } from "@heroui/react";
 
 import type { BatchAction, ResultAction, TableRowAction } from "../types";
 
@@ -14,6 +14,12 @@ type ResultTableProps = {
   rowActions?: TableRowAction[][];
   batchAction?: BatchAction;
   onAction: (action: ResultAction) => void;
+};
+
+type RowItem = {
+  id: string;
+  index: number;
+  row: string[];
 };
 
 function avatarInitial(name: string) {
@@ -92,62 +98,67 @@ export default function ResultTable({
     });
   }
 
-  const columnCount = columns.length + (batched ? 1 : 0) + (hasActions ? 1 : 0);
+  const items: RowItem[] = rows.map((row, index) => ({
+    id: String(index),
+    index,
+    row,
+  }));
 
   return (
-    <div className="table-root table-root--primary">
-      <div className="table__scroll-container" role="region" aria-label={label} tabIndex={0}>
-        <table
-          className="table__content"
-          aria-label={label}
-          style={wide ? undefined : { maxWidth: "100%" }}
-        >
-          <colgroup>
-            {batched && <col style={{ width: 32 }} />}
+    <div className="table-root table-root--primary" data-wide={wide || undefined}>
+      <Table.ScrollContainer
+        className="table__scroll-container"
+        role="region"
+        aria-label={label}
+        tabIndex={0}
+      >
+        <Table.Content aria-label={label}>
+          <Table.Header>
+            {batched && (
+              <Table.Column id="select" className="table__column">
+                <Checkbox
+                  aria-label={`全选 ${rows.length} 行`}
+                  isSelected={allSelected}
+                  isIndeterminate={someSelected}
+                  onChange={toggleAll}
+                >
+                  <Checkbox.Content>
+                    <Checkbox.Control>
+                      <Checkbox.Indicator />
+                    </Checkbox.Control>
+                  </Checkbox.Content>
+                </Checkbox>
+              </Table.Column>
+            )}
             {columns.map((column, index) => (
-              <col key={`col-${column}-${index}`} style={{ width: columnWidths?.[index] }} />
+              <Table.Column
+                key={`col-${column}-${index}`}
+                id={`col-${index}`}
+                isRowHeader={index === 0}
+                className="table__column"
+                style={{ width: columnWidths?.[index] }}
+              >
+                {column}
+              </Table.Column>
             ))}
-            {hasActions && <col style={{ width: batched ? undefined : "14%" }} />}
-          </colgroup>
-          <thead className="table__header">
-            <tr>
-              {batched && (
-                <th className="table__column table__column--select" scope="col">
-                  <Checkbox
-                    aria-label={`全选 ${rows.length} 行`}
-                    isSelected={allSelected}
-                    isIndeterminate={someSelected}
-                    onChange={toggleAll}
-                  >
-                    <Checkbox.Content>
-                      <Checkbox.Control>
-                        <Checkbox.Indicator />
-                      </Checkbox.Control>
-                    </Checkbox.Content>
-                  </Checkbox>
-                </th>
-              )}
-              {columns.map((column, index) => (
-                <th key={`${column}-${index}`} className="table__column" scope="col">
-                  {column}
-                </th>
-              ))}
-              {hasActions && (
-                <th className="table__column" scope="col">
-                  {actionsHeader}
-                </th>
-              )}
-            </tr>
-          </thead>
-          <tbody className="table__body">
-            {rows.map((row, rowIndex) => (
-              <tr key={rowIndex} className="table__row">
+            {hasActions && (
+              <Table.Column id="actions" className="table__column">
+                {actionsHeader}
+              </Table.Column>
+            )}
+          </Table.Header>
+          <Table.Body
+            items={items}
+            renderEmptyState={() => <span className="app-table-empty">暂无数据</span>}
+          >
+            {(item) => (
+              <Table.Row id={item.id} className="table__row">
                 {batched && (
-                  <td className="table__cell table__cell--select">
+                  <Table.Cell id={`${item.id}-select`} className="table__cell table__cell--select">
                     <Checkbox
-                      aria-label={`选择第 ${rowIndex + 1} 行`}
-                      isSelected={selected.has(rowIndex)}
-                      onChange={(checked) => toggleRow(rowIndex, checked)}
+                      aria-label={`选择第 ${item.index + 1} 行`}
+                      isSelected={selected.has(item.index)}
+                      onChange={(checked) => toggleRow(item.index, checked)}
                     >
                       <Checkbox.Content>
                         <Checkbox.Control>
@@ -155,17 +166,21 @@ export default function ResultTable({
                         </Checkbox.Control>
                       </Checkbox.Content>
                     </Checkbox>
-                  </td>
+                  </Table.Cell>
                 )}
-                {row.map((cell, cellIndex) => {
+                {item.row.map((cell, cellIndex) => {
                   const truncate = truncateColumn(columns[cellIndex] ?? "");
                   return (
-                    <td key={cellIndex} className="table__cell mono">
+                    <Table.Cell
+                      key={`${item.id}-c${cellIndex}`}
+                      id={`${item.id}-c${cellIndex}`}
+                      className="table__cell mono"
+                    >
                       {cellIndex === 0 && rowIcons?.length ? (
                         <span className="table__cell-with-icon">
                           <span className="table__row-icon" aria-hidden="true">
-                            {rowIcons[rowIndex] ? (
-                              <img src={rowIcons[rowIndex]} alt="" />
+                            {rowIcons[item.index] ? (
+                              <img src={rowIcons[item.index]} alt="" />
                             ) : (
                               avatarInitial(cell)
                             )}
@@ -185,12 +200,12 @@ export default function ResultTable({
                           {cell}
                         </span>
                       )}
-                    </td>
+                    </Table.Cell>
                   );
                 })}
                 {hasActions && (
-                  <td className="table__cell table__cell--actions">
-                    {(rowActions?.[rowIndex] ?? []).map((action, actionIndex) => {
+                  <Table.Cell id={`${item.id}-actions`} className="table__cell table__cell--actions">
+                    {(rowActions?.[item.index] ?? []).map((action, actionIndex) => {
                       if (action.variant === "switch") {
                         return (
                           <Switch
@@ -217,7 +232,7 @@ export default function ResultTable({
                             aria-label={action.label}
                             onChange={(event) => {
                               const option = action.options?.find(
-                                (item) => item.value === event.target.value,
+                                (optionItem) => optionItem.value === event.target.value,
                               );
                               event.target.value = action.value ?? "";
                               if (!option || option.value === action.value) return;
@@ -247,20 +262,13 @@ export default function ResultTable({
                         </Button>
                       );
                     })}
-                  </td>
+                  </Table.Cell>
                 )}
-              </tr>
-            ))}
-            {rows.length === 0 && (
-              <tr>
-                <td className="table__cell" colSpan={columnCount}>
-                  暂无数据
-                </td>
-              </tr>
+              </Table.Row>
             )}
-          </tbody>
-        </table>
-      </div>
+          </Table.Body>
+        </Table.Content>
+      </Table.ScrollContainer>
       {batched && (
         <div className="table__batch">
           <span>
