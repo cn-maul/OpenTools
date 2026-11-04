@@ -5,6 +5,14 @@ export async function listTools(): Promise<ToolDefinition[]> {
   return (await Jobs.tools()) as unknown as ToolDefinition[];
 }
 
+export async function revealArtifact(jobId: string, name: string): Promise<void> {
+  await Jobs.revealArtifact(jobId, name);
+}
+
+export async function copyArtifactPath(jobId: string, name: string): Promise<void> {
+  await Jobs.copyArtifactPath(jobId, name);
+}
+
 export async function getAppVersion(): Promise<string> {
   return await Jobs.appVersion();
 }

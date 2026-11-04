@@ -159,6 +159,20 @@ func (s *Schema) WithGroup(group string) *Schema {
 	return &out
 }
 
+// WithSecret marks a string field so forms render it as a password input.
+// It is presentation-only: the value is still transported and stored the same
+// way as any other field.
+func (s *Schema) WithSecret() *Schema {
+	out := *s
+	ui := UIHints{}
+	if out.UI != nil {
+		ui = *out.UI
+	}
+	ui.Secret = true
+	out.UI = &ui
+	return &out
+}
+
 // WithAccept limits a file picker to the listed extensions.
 func (s *Schema) WithAccept(extensions ...string) *Schema {
 	out := *s

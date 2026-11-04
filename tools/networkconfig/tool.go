@@ -57,7 +57,7 @@ func (Tool) Definition() tool.Definition {
 				WithDefault("detect"),
 			"provider": tool.Select("DNS 服务", "DNS 测速结果中会提供每个服务的一键切换操作。", providerKeys()...).
 				WithEnumLabels(providerLabels()).
-				WithDefault("alidns").
+				WithDefault("dnspod").
 				WithVisibleWhen("action", "apply"),
 			"backupFile": tool.String("备份文件", "填写手动备份的 JSON 路径；留空时恢复最新备份。").
 				WithWidget("file", "选择 OpenTools 生成的网络配置备份").

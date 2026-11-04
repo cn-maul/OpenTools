@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Alert, Button, Chip, Kbd } from "@heroui/react";
 
-import { resultText } from "../api";
+import { copyArtifactPath, resultText, revealArtifact } from "../api";
 import type {
   Block,
   FactItem,
@@ -140,6 +140,68 @@ function isLightSection(section: ResultSection) {
     return items.length <= 2 && meterFacts(block).length <= 2;
   }
   return false;
+}
+
+function artifactMimeLabel(mime?: string) {
+  if (!mime) return "文件";
+  if (mime.includes("wordprocessingml")) return "Word 文档";
+  if (mime.includes("spreadsheetml")) return "Excel 表格";
+  if (mime.includes("presentationml")) return "演示文稿";
+  if (mime === "text/csv") return "CSV 表格";
+  if (mime.startsWith("text/")) return "文本文件";
+  if (mime.startsWith("image/")) return "图片";
+  if (mime === "application/pdf") return "PDF 文档";
+  return "文件";
+}
+
+function ArtifactsView({ job }: { job: Job }) {
+  const [busy, setBusy] = useState("");
+  const artifacts = job.result?.artifacts ?? [];
+  if (artifacts.length === 0) return null;
+
+  async function run(key: string, action: () => Promise<void>) {
+    setBusy(key);
+    try {
+      await action();
+    } finally {
+      setBusy((current) => (current === key ? "" : current));
+    }
+  }
+
+  return (
+    <div className="app-result-artifacts">
+      <span className="app-result-label">产出文件</span>
+      {artifacts.map((artifact) => {
+        const key = `${job.id}:${artifact.name}`;
+        return (
+          <div key={artifact.name} className="app-artifact-row">
+            <div className="app-artifact-info">
+              <span className="app-artifact-name">{artifact.name}</span>
+              <span className="app-artifact-kind">{artifactMimeLabel(artifact.mime)}</span>
+            </div>
+            <div className="app-artifact-actions">
+              <Button
+                variant="secondary"
+                size="sm"
+                isDisabled={busy === key}
+                onPress={() => run(key, () => revealArtifact(job.id, artifact.name))}
+              >
+                {busy === key ? "打开中…" : "打开文件"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                isDisabled={busy === key}
+                onPress={() => run(key, () => copyArtifactPath(job.id, artifact.name))}
+              >
+                {busy === key ? "已复制" : "复制路径"}
+              </Button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export default function ResultView({ job, tool, onAction }: ResultViewProps) {
@@ -459,6 +521,8 @@ export default function ResultView({ job, tool, onAction }: ResultViewProps) {
                   </div>
                 )}
 
+                {!focusedTable && <ArtifactsView job={job} />}
+
                 {toolActions.length > 0 && (
                   <div className="app-result-actions">
                     <span className="app-result-label">下一步</span>
@@ -538,6 +602,8 @@ export default function ResultView({ job, tool, onAction }: ResultViewProps) {
                     ))}
                   </div>
                 )}
+
+                <ArtifactsView job={job} />
 
                 {toolActions.length > 0 && (
                   <div className="app-result-actions">

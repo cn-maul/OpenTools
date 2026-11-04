@@ -91,7 +91,8 @@ func buildDefinition() tool.Definition {
 			"endpoint": tool.String("接口地址", "OpenAI 兼容接口地址，例如 https://api.deepseek.com/v1。").
 				WithWidget("", "https://api.deepseek.com/v1"),
 			"api_key": tool.String("API Key", "只用于本次调用，不会写入任何文件。").
-				WithWidget("", "sk-…"),
+				WithWidget("", "sk-…").
+				WithSecret(),
 			"model": tool.String("模型", "模型名称，例如 deepseek-chat。").
 				WithWidget("", "deepseek-chat"),
 			"protocol": tool.Select(

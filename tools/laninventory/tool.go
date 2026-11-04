@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -40,7 +42,8 @@ func (Tool) Definition() tool.Definition {
 		Version:     version,
 		Effects:     []tool.Effect{tool.EffectReadFiles, tool.EffectNetwork, tool.EffectWriteFiles},
 		Input: tool.Object(map[string]*tool.Schema{
-			"network": tool.String("扫描范围", "留空时自动识别当前联网的主网卡与网段；也可填写 192.168.1.0/24。"),
+			"network": tool.String("扫描范围", "留空时自动识别当前联网的主网卡与网段；也可填写 192.168.1.0/24。").
+				WithWidget("", "例如 192.168.1.0/24，留空自动识别"),
 			"mode": tool.Select("扫描模式", "快速扫描常见端口；彻底扫描更多 TCP 端口，耗时更长。", "quick", "thorough").
 				WithEnumLabels(map[string]string{
 					"quick":    "快速扫描",
@@ -181,6 +184,10 @@ func (Tool) Run(ctx context.Context, input tool.Input, env tool.Environment, rep
 			},
 		},
 	}
+	blocks := []tool.Block{grid}
+	if len(hosts) > 0 {
+		blocks = append(blocks, onlineHostsTable(hosts))
+	}
 	if err := ctx.Err(); err != nil {
 		return tool.Result{}, err
 	}
@@ -188,12 +195,139 @@ func (Tool) Run(ctx context.Context, input tool.Input, env tool.Environment, rep
 		ID:     "map",
 		Title:  "地址分布",
 		State:  tool.SectionReady,
-		Blocks: []tool.Block{grid},
+		Blocks: blocks,
 	})
-	return tool.Result{
+
+	csvPath := ""
+	if len(hosts) > 0 {
+		name := fmt.Sprintf("lan-scan-%s.csv", time.Now().Format("20060102-150405"))
+		data := buildCSVReport(target, addresses, hosts, free)
+		path := filepath.Join(env.WorkDir, name)
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			report.Log("warn", fmt.Sprintf("写出 CSV 报告失败：%v", err))
+		} else if _, _, err := tool.ResolveArtifact(env, path); err != nil {
+			report.Log("warn", fmt.Sprintf("CSV 报告不可用：%v", err))
+		} else {
+			csvPath = path
+			report.Log("info", "CSV 报告已生成："+name)
+		}
+	}
+	result := tool.Result{
 		Summary: fmt.Sprintf("%s：在线 %d，空闲 %d", target.CIDR, len(hosts), len(free)),
-		Blocks:  []tool.Block{grid},
-	}, nil
+		Blocks:  blocks,
+	}
+	if csvPath != "" {
+		artifactPath, _, err := tool.ResolveArtifact(env, csvPath)
+		if err == nil {
+			result.Artifacts = []tool.Artifact{{
+				Name: filepath.Base(csvPath),
+				Path: artifactPath,
+				MIME: "text/csv",
+			}}
+		}
+	}
+	return result, nil
+}
+
+// onlineHostsTable renders the readable companion to the address grid: one
+// row per online device with fingerprint, latency and open ports.
+func onlineHostsTable(hosts []hostResult) tool.Block {
+	rows := make([][]string, 0, len(hosts))
+	for _, host := range hosts {
+		fp := host.Fingerprint
+		device := fp.OSGuess
+		if device == "" {
+			device = "未知在线设备"
+		}
+		rows = append(rows, []string{
+			host.Address,
+			device,
+			firstNonEmpty(fp.Vendor, "—"),
+			formatRTT(host.RTT),
+			host.Method,
+			portsLabel(host.OpenPorts),
+		})
+	}
+	return tool.Block{
+		Kind:    tool.BlockTable,
+		Title:   fmt.Sprintf("在线设备（%d 台）", len(hosts)),
+		Columns: []string{"地址", "设备", "厂商", "延迟", "探测方式", "开放端口"},
+		Rows:    rows,
+	}
+}
+
+func portsLabel(ports []int) string {
+	if len(ports) == 0 {
+		return "—"
+	}
+	out := make([]string, 0, len(ports))
+	for _, port := range ports {
+		out = append(out, fmt.Sprint(port))
+	}
+	return strings.Join(out, ", ")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+// buildCSVReport writes every scanned address with its verdict, so the file
+// doubles as an IP-planning worksheet.
+func buildCSVReport(target scanTarget, addresses []netip.Addr, hosts []hostResult, free []string) []byte {
+	detail := make(map[string]hostResult, len(hosts))
+	for _, host := range hosts {
+		detail[host.Address] = host
+	}
+	freeSet := make(map[string]bool, len(free))
+	for _, address := range free {
+		freeSet[address] = true
+	}
+	var b strings.Builder
+	b.WriteString("\xEF\xBB\xBF")
+	b.WriteString("地址,状态,设备类型,厂商,延迟(ms),探测方式,开放端口,MAC\n")
+	for _, address := range addresses {
+		key := address.String()
+		status, device, vendor, rtt, method, ports, mac := "空闲", "", "", "", "", "", ""
+		if key == strings.TrimSpace(target.Address) {
+			status, device = "本机", "本机地址"
+		} else if host, ok := detail[key]; ok {
+			fp := host.Fingerprint
+			status = "在线"
+			device = firstNonEmpty(fp.OSGuess, "未知在线设备")
+			vendor = fp.Vendor
+			if host.RTT > 0 {
+				rtt = fmt.Sprintf("%.0f", float64(host.RTT.Microseconds())/1000)
+			}
+			method = host.Method
+			ports = portsLabel(host.OpenPorts)
+			mac = host.MAC
+		} else if !freeSet[key] {
+			status = "在线"
+		}
+		fields := []string{key, status, device, vendor, rtt, method, ports, mac}
+		for i, field := range fields {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(csvField(field))
+		}
+		b.WriteByte('\n')
+	}
+	return []byte(b.String())
+}
+
+// csvField quotes a value when it contains a comma, quote or newline, and
+// doubles embedded quotes per RFC 4180.
+func csvField(value string) string {
+	if !strings.ContainsAny(value, ",\"\n\r") {
+		return value
+	}
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }
 
 func selectTarget(ctx context.Context, raw string) (scanTarget, error) {
@@ -290,7 +424,7 @@ func (Tool) scanWorkers(addressCount int) int {
 func scanHosts(ctx context.Context, addresses []netip.Addr, arp map[string]string, mode string, timeout time.Duration, report tool.Reporter) []hostResult {
 	ports := []int{445, 139, 135, 80, 443, 22, 3389, 9100, 631, 62078}
 	if mode == "thorough" {
-		ports = append(ports, 21, 23, 53, 88, 110, 143, 389, 636, 8080, 8443, 8000, 9100, 62078)
+		ports = append(ports, 21, 23, 53, 88, 110, 143, 389, 636, 8080, 8443, 8000, 548, 5000, 5001)
 	}
 	workers := Tool{}.scanWorkers(len(addresses))
 	queue := make(chan netip.Addr)
