@@ -809,15 +809,12 @@ func providerByKey(key string) (provider, bool) {
 
 func providerList() []provider {
 	return []provider{
-		{Key: "alidns", Name: "阿里公共 DNS", Servers: []string{"223.5.5.5", "223.6.6.6"}, Region: "中国大陆", Note: "国内解析快，支持 IPv4/IPv6。"},
-		{Key: "dnspod", Name: "DNSPod 公共 DNS", Servers: []string{"119.29.29.29", "182.254.116.116"}, Region: "中国大陆", Note: "腾讯云公共解析服务。"},
-		{Key: "114dns", Name: "114 DNS", Servers: []string{"114.114.114.114", "114.114.115.115"}, Region: "中国大陆", Note: "运营商覆盖广，适合国内网站。"},
-		{Key: "baidu", Name: "百度公共 DNS", Servers: []string{"180.76.76.76"}, Region: "中国大陆", Note: "国内访问稳定。"},
-		{Key: "cnnic", Name: "CNNIC DNS", Servers: []string{"1.2.4.8", "210.2.4.8"}, Region: "中国大陆", Note: "公共 DNS 服务，部分地区延迟较低。"},
-		{Key: "cloudflare", Name: "Cloudflare DNS", Servers: []string{"1.1.1.1", "1.0.0.1"}, Region: "全球", Note: "隐私友好，国际站点体验好。"},
-		{Key: "google", Name: "Google Public DNS", Servers: []string{"8.8.8.8", "8.8.4.4"}, Region: "全球", Note: "全球覆盖广，国内延迟可能较高。"},
-		{Key: "quad9", Name: "Quad9", Servers: []string{"9.9.9.9", "149.112.112.112"}, Region: "全球", Note: "带恶意域名拦截。"},
-		{Key: "opendns", Name: "OpenDNS", Servers: []string{"208.67.222.222", "208.67.220.220"}, Region: "全球", Note: "老牌公共 DNS，支持家庭防护。"},
+		{Key: "dnspod", Name: "腾讯 DNSPod", Servers: []string{"119.29.29.29", "119.28.28.28"}, Region: "中国大陆", Note: "腾讯云公共解析服务。"},
+		{Key: "alidns", Name: "阿里云 DNS", Servers: []string{"223.5.5.5", "223.6.6.6"}, Region: "中国大陆", Note: "国内解析快，支持 IPv4/IPv6。"},
+		{Key: "baidu", Name: "百度 DNS", Servers: []string{"180.76.76.76"}, Region: "中国大陆", Note: "国内访问稳定。"},
+		{Key: "bytedance", Name: "字节跳动 DNS", Servers: []string{"180.184.1.1", "180.184.2.2"}, Region: "中国大陆", Note: "火山引擎公共解析服务。"},
+		{Key: "360unicom", Name: "360 联通 DNS", Servers: []string{"123.125.81.6"}, Region: "中国大陆", Note: "360 与联通合作节点，联通线路延迟低。"},
+		{Key: "hentelecom", Name: "河南电信 DNS", Servers: []string{"222.88.88.88", "222.85.85.85"}, Region: "中国大陆", Note: "河南电信运营商节点，电信线路延迟低。"},
 	}
 }
 
