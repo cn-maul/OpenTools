@@ -3,14 +3,13 @@ module opentools
 go 1.27.3
 
 require (
-	github.com/cn-maul/GovDoc v0.0.0
+	github.com/cn-maul/rosetta v1.2.1
 	github.com/egoist/mygo v0.7.4
 	golang.org/x/net v0.59.0
 	modernc.org/sqlite v1.61.0
 )
 
 require (
-	github.com/cn-maul/rosetta v1.0.1 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/ebitengine/purego v0.11.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -25,5 +24,3 @@ require (
 )
 
 tool github.com/egoist/mygo/cmd/mygo
-
-replace github.com/cn-maul/GovDoc => ../GovDoc

@@ -1,8 +1,8 @@
 // Package govdoc formats a document to GB/T 9704-2012 (党政机关公文格式).
 //
 // It is a thin adapter: parsing, model calling, verification and .docx writing
-// all live in the GovDoc engine (github.com/cn-maul/GovDoc), which the desktop
-// app hosts directly. Nothing here re-implements the "no silent rewrite" rule —
+// live in the vendored engine under engine/ (copied from cn-maul/GovDoc at
+// v1.0 lineage). Nothing here re-implements the "no silent rewrite" rule —
 // the engine refuses to render a document whose text changed without a declared
 // edit, and that refusal surfaces here as a tool error.
 package govdoc
@@ -16,11 +16,11 @@ import (
 	"strings"
 	"time"
 
-	engineconfig "github.com/cn-maul/GovDoc/engine/config"
-	"github.com/cn-maul/GovDoc/engine/docmodel"
-	"github.com/cn-maul/GovDoc/engine/gbstandard"
-	"github.com/cn-maul/GovDoc/engine/llm"
-	"github.com/cn-maul/GovDoc/engine/pipeline"
+	engineconfig "opentools/tools/govdoc/engine/config"
+	"opentools/tools/govdoc/engine/docmodel"
+	"opentools/tools/govdoc/engine/gbstandard"
+	"opentools/tools/govdoc/engine/llm"
+	"opentools/tools/govdoc/engine/pipeline"
 
 	"opentools/pkg/tool"
 )
