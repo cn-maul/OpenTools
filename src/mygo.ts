@@ -17,6 +17,15 @@ export interface Artifact {
   mime?: string;
 }
 
+export interface BatchAction {
+  label: string;
+  tone?: Tone;
+  confirm?: string;
+  input: Record<string, unknown>;
+  itemKey?: string;
+  itemsKey?: string;
+}
+
 export interface Block {
   kind: BlockKind;
   title?: string;
@@ -25,7 +34,11 @@ export interface Block {
   language?: string;
   data?: unknown;
   columns?: string[];
+  columnWidths?: string[];
   rows?: string[][];
+  rowIcons?: string[];
+  rowActions?: RowAction[][];
+  batchAction?: BatchAction;
 }
 
 export type BlockKind = string;
@@ -106,6 +119,24 @@ export interface Result {
   artifacts?: Artifact[];
   actions?: Action[];
   warnings?: string[];
+}
+
+export interface RowAction {
+  label: string;
+  tone?: Tone;
+  confirm?: string;
+  input: Record<string, unknown>;
+  variant?: string;
+  on?: boolean;
+  value?: string;
+  options?: RowActionOption[];
+}
+
+export interface RowActionOption {
+  label: string;
+  value: string;
+  input: Record<string, unknown>;
+  confirm?: string;
 }
 
 export interface Schema {

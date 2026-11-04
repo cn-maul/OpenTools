@@ -7,21 +7,27 @@
     "build": "go tool mygo build",
     "generate": "go tool mygo generate",
     "dev:web": "vite",
-    "build:web": "vue-tsc --noEmit && vite build",
-    "typecheck": "vue-tsc --noEmit"
+    "build:web": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@fontsource-variable/instrument-sans": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@fontsource-variable/noto-sans-sc": "^5.3.1",
-    "mygo-runtime": "0.6.4",
-    "vue": "^3.5.44"
+    "@heroui/react": "^3.2.7",
+    "@heroui/styles": "^3.2.7",
+    "mygo-runtime": "^0.7.4",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^6.0.10",
-    "mygo-cli": "0.6.4",
+    "@tailwindcss/vite": "^4.3.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "mygo-cli": "^0.7.4",
+    "tailwindcss": "^4.3.4",
     "typescript": "^5.9.3",
-    "vite": "^8.3.5",
-    "vue-tsc": "^3.3.13"
+    "vite": "^8.3.5"
   }
 }

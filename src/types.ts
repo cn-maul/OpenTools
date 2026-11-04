@@ -49,7 +49,38 @@ export interface Block {
   language?: string;
   data?: unknown;
   columns?: string[];
+  columnWidths?: string[];
   rows?: string[][];
+  rowIcons?: string[];
+  rowActions?: TableRowAction[][];
+  batchAction?: BatchAction;
+}
+
+export interface BatchAction {
+  label: string;
+  tone?: Tone;
+  confirm?: string;
+  input: Record<string, unknown>;
+  itemKey?: string;
+  itemsKey?: string;
+}
+
+export interface TableRowAction {
+  label: string;
+  tone?: Tone;
+  confirm?: string;
+  input: Record<string, unknown>;
+  variant?: "switch" | "select";
+  on?: boolean;
+  value?: string;
+  options?: TableRowActionOption[];
+}
+
+export interface TableRowActionOption {
+  label: string;
+  value: string;
+  input: Record<string, unknown>;
+  confirm?: string;
 }
 
 export interface Artifact {
