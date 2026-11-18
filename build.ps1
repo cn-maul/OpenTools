@@ -37,12 +37,20 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = $OutputEncoding
 
 $root = $PSScriptRoot
-$configVersion = (
-    Select-String -LiteralPath (Join-Path $root "mygo.config.ts") -Pattern 'version:\s*"([^"]+)"' |
-        Select-Object -First 1
-).Matches.Groups[1].Value
+$configPath = Join-Path $root "mygo.json"
+if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+    $configPath = Join-Path $root "mygo.config.ts"
+}
+if ($configPath.EndsWith(".json")) {
+    $configVersion = (Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json).version
+} else {
+    $configVersion = (
+        Select-String -LiteralPath $configPath -Pattern 'version:\s*"([^"]+)"' |
+            Select-Object -First 1
+    ).Matches.Groups[1].Value
+}
 if ($Version -ne $configVersion) {
-    throw "Version mismatch: -Version $Version, mygo.config.ts $configVersion."
+    throw "Version mismatch: -Version $Version, $(Split-Path $configPath -Leaf) $configVersion."
 }
 
 $outRootPath = [System.IO.Path]::GetFullPath($OutRoot)
@@ -139,7 +147,6 @@ if (-not $SkipChecks) {
     }
     Invoke-Checked { Set-Location $root; go test ./... } "Go checks"
     Invoke-Checked { Set-Location $root; go vet ./... } "Go vet"
-    Invoke-Checked { Set-Location $root; npm run typecheck } "TypeScript checks"
 }
 
 Invoke-Checked {

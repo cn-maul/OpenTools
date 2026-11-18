@@ -7,7 +7,8 @@
 
 ```
 cmd/opentools            桌面壳 + CLI，只做组装
-internal/desktop         MyGo 适配（窗口、原生对话框、通知、提权）
+internal/desktop         原生界面：主壳、工具表单、结果区块、商店、设置、主题；
+                         也是唯一导入 MyGo 的包
 internal/appkit          与 GUI 无关的组装：SQLite → 插件 → 任务 → 应用服务
 internal/application     用例层，桌面与 CLI 共用
 internal/plugins         已安装插件发现、安装/升级/卸载、进程适配

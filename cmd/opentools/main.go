@@ -39,6 +39,12 @@ func runDesktop() {
 
 	mygo.App.SetName("OpenTools")
 	mygo.App.SetVersion(version)
+	// A second launch should surface the running shell (and its running
+	// jobs) instead of starting a competing instance against the same
+	// SQLite file and job directories.
+	if !mygo.App.RequestSingleInstanceLock() {
+		return
+	}
 	dir, err := appdata.Dir()
 	if err != nil {
 		fatal(err)
@@ -50,27 +56,17 @@ func runDesktop() {
 	}
 	defer app.Close()
 
-	mygo.BindAs("Jobs", desktop.NewJobs(app.Service, version))
-	go desktop.StartEventForwarder(ctx, app.Service)
-
+	shell := desktop.NewShell(app.Service, version, dir)
+	mygo.App.OnSecondInstance(func([]string, string) {
+		shell.Open()
+	})
 	mygo.App.WhenReady(func() {
-		mygo.NewWindow(mygo.WindowOptions{
-			Title:             "OpenTools",
-			Width:             1240,
-			Height:            800,
-			MinWidth:          820,
-			MinHeight:         560,
-			TitleBarStyle:     mygo.TitleBarHidden,
-			TitleBarHeight:    48,
-			HideWindowButtons: true,
-			BackgroundColor:   "light-dark(#f5f7fa, #17181a)",
-			URL:               "/",
-		})
+		shell.Open()
 	})
 	if runtime.GOOS == "darwin" {
 		mygo.App.OnActivate(func(hasVisible bool) {
 			if !hasVisible {
-				mygo.NewWindow(mygo.WindowOptions{Title: "OpenTools", URL: "/"})
+				shell.Open()
 			}
 		})
 	}

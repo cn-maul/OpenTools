@@ -1,7 +1,7 @@
 # OpenTools
 
-OpenTools 是一个用 Go 编写的桌面工具框架和插件管理器。界面使用 React + Tailwind +
-HeroUI 3，通过 MyGo WebView 渲染；桌面应用和 CLI 共享同一套应用服务。
+OpenTools 是一个用 Go 编写的桌面工具框架和插件管理器。界面完全由 Go + MyGo
+原生控件绘制，不加载网页；桌面应用和 CLI 共享同一套应用服务。
 
 桌面窗口使用自绘标题栏，包含最小化、最大化/还原和关闭按钮。主程序版本号显示在应用名旁边；每个工具在自己的标题栏中带有独立版本号。
 
@@ -17,13 +17,14 @@ HeroUI 3，通过 MyGo WebView 渲染；桌面应用和 CLI 共享同一套应�
 - [`docs/plugin-architecture.md`](docs/plugin-architecture.md)：面向维护者，分层、协议与演进规则。
 
 ```text
-MyGo / CLI
+cmd/opentools
     -> internal/application      用例层，不依赖 GUI 或数据库包
         -> internal/catalog      已安装工具注册表
         -> internal/plugins      工具商店与 JSON-RPC 进程适配器
         -> internal/tasks        后台任务、取消、事件流
             -> tasks.Store       持久化接口
                 -> SQLite
+    -> internal/desktop          原生窗口：主壳、表单、结果渲染、设置、主题
     -> pkg/tool                  仅依赖标准库的工具契约
         -> pkg/tool/pluginproto  带版本号的 JSON-RPC 2.0 进程协议
         -> pkg/tool/host         工具侧的宿主服务类型化封装
@@ -32,10 +33,11 @@ MyGo / CLI
 
 关键边界：
 
-- `pkg/tool` 永远不导入 React、MyGo、SQLite 或应用状态。
+- `pkg/tool` 永远不导入 MyGo/UI、SQLite 或应用状态，只依赖标准库。
 - `internal/appkit` 不导入任何业务工具包，只扫描插件目录并注册轻量进程适配器。
 - `internal/application` 由桌面端和 CLI 共享。
-- `internal/desktop` 是唯一知道 MyGo 的包。
+- `internal/desktop` 是唯一知道 MyGo 的包：主窗口、工具表单、结果区块、
+  商店和设置全部用原生控件绘制，没有任何 WebView 或前端构建步骤。
 - `internal/tasks` 负责任务生命周期与取消；工具只上报进度并观察 `context.Context`。
 - 任务比窗口活得久。只有当进程停止刷新持久心跳时任务才被标记为"已中断"，因此 GUI 和 CLI 实例可以安全共存。
 - 工具结果是结构化区块加上任务工作目录下的文件；宿主在暴露产物路径前会做校验。
@@ -77,13 +79,10 @@ data\plugins\<tool-id>\
 
 ## 开发
 
-环境要求：Go 1.27+、Node.js 22+，以及 MyGo 所需的平台依赖。
+环境要求：Go 1.27+，以及 MyGo 所需的平台依赖。界面和设置窗口都是原生控件，
+没有前端构建步骤，也不需要 Node.js。
 
 ```powershell
-npm install
-npm run generate
-npm run typecheck
-npm run build:web
 go test ./...
 go vet ./...
 go tool mygo build -platform windows/amd64
@@ -210,7 +209,9 @@ Windows 数据采集使用系统自带的 PowerShell 5.1，不依赖 PowerShell 
 3. exe 旁边的 `store\catalog.json`（离线便携模式）；
 4. 线上默认源 `https://gitee.com/dogge2333/opentools-store/raw/master/catalog.json`。
 
-设置面板在 URL 输入框下方固定展示 Gitee 源，点**使用**即可把输入框切换成该地址并立即保存刷新，无需手工粘贴。
+**设置**是一个原生 UI 窗口（Go 绘制，不加载网页）：在输入框下方固定展示
+Gitee 源，点**填入**把地址写进输入框，再点**保存**（或按 Enter）生效。
+保存后窗口提示结果，主窗口的商店列表会自动刷新。
 
 所有来源都不可达时，已安装的工具照常可用；商店列表会带上警告但不影响本地工具运行。
 

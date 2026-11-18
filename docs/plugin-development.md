@@ -471,8 +471,8 @@ report.Section(tool.Section{
 - `ready` 必须有内容（区块或 `Text`），否则整条上报被丢弃。
 - 区块非法时整条上报被静默丢弃，工具不会收到错误——本地自测时要用
   `tool.ValidateSection` 提前查。
-- `Layout: "tabs"` 且分区不少于两个时变成标签页；否则纵向排列。分区超过
-  两个且没有声明 `tabs` 时，界面会自动切换成更紧凑的堆叠样式。
+- `Layout: "tabs"` 且分区不少于两个时变成标签页；否则一律纵向排列。
+  分区多时用 `tabs`，不要指望界面自动换布局。
 
 ### 区块类型
 
@@ -480,7 +480,7 @@ report.Section(tool.Section{
 |---|---|---|
 | `text` | `Text` | 一段正文 |
 | `notice` | `Text`、`Tone` | 带颜色的提示条 |
-| `code` | `Text`、`Language` | 等宽代码块；`Language` 为 `"text"` 时按行紧凑显示 |
+| `code` | `Text`、`Language` | 等宽代码块，带复制按钮；`Language` 只作标注，不做高亮 |
 | `json` | `Data` | 任意结构，格式化成 JSON 显示 |
 | `diff` | `Text` | 等宽差异文本 |
 | `table` | `Columns`、`Rows`、`ColumnWidths`、`RowIcons`、`RowActions`、`BatchAction` | 主结果表 |
@@ -492,7 +492,9 @@ report.Section(tool.Section{
 
 表格另有两个可选的排版字段：
 
-- `ColumnWidths` 与 `Columns` 等长，值是 CSS 宽度（如 `"120px"`、`"30%"`）；
+- `ColumnWidths` 与 `Columns` 等长，值是渲染器的 DIP 宽度，写成 `"120px"`
+  这样的像素数字（`px` 只是单位写法，不是浏览器的 CSS 百分比）。留空或写
+  `"0px"` 表示按内容自动分配；不支持 `"30%"`、`"auto"` 这类 CSS 表达式。
 - `RowIcons` 与 `Rows` 等长，值是 `data:` URI。空字符串会退化为首字标记，
   不要留空数组，否则整列图标都不显示。
 
@@ -530,6 +532,33 @@ tool.Block{
 `Unit` 决定后缀，`Max` 为 100 时默认显示 `%`。
 
 `facts` 的 `Group` 相同会归到一个小组标题下，适合放两组以上标签值。
+
+### 原生界面实际怎么画
+
+桌面端完全由 Go + MyGo 原生控件绘制，没有网页层，因此下面这些**渲染约定**
+就是工具作者能依赖的全部外观契约：
+
+- 摘要是一行说明，显示在结果顶部；`Description` 只在工具页头部出现。
+- 区块按上报顺序纵向排列。`Title` 非空时先画一行小标题，再画区块本体。
+- `notice` 用右侧留白的两行提示条；`Tone` 决定颜色，`neutral` 用正文色。
+- `code` / `json` / `diff` 共用一个等宽块：右上角有「复制」按钮，文本自动换行，
+  `Language` 目前不参与语法高亮，只作为语义标注保留。
+- `table` 的行高约 30 DIP，表格整体高度限制在 360 DIP 以内（约 10 行），
+  超出后内部滚动，表头固定。列宽用 `ColumnWidths` 的 DIP 数值，最小值
+  72 DIP；列多时优先保证前两列可读。
+- `status-grid` 不传 `labeled` 时是 18×18 的色块矩阵，悬停显示 `Label + Detail`；
+  `labeled: true` 时每个单元格放大成 72×34 的卡片，适合设备名很短、需要直接
+  读出来的场景。
+- `meter` 统一渲染成横向进度条，`Variant: "ring"` 目前与 `"bar"` 同形；
+  `Segments` 在条下方按彩色方块列出，而不是叠加在进度条里。
+- `facts` 是两列布局：左列 150 DIP 宽放 `Label`，右列换行放 `Value`。
+
+分区的 `Layout: "tabs"` 在桌面端是一个横向分段控件，标签过多时会挤在一起，
+因此分区**标题尽量控制在 6 个汉字以内**；超过 4 个分区建议改用堆叠布局。
+
+复制与导出会把 `Sections` 里的内容一起带上：依次输出摘要、每个分区的标题与
+正文/区块、最后是 `Result.Blocks`。因此不要为了「导出好看」把同一份数据
+同时放进分区和 `Result.Blocks`，界面上不会重复，导出文本里会。
 
 ### 表格里的操作
 
