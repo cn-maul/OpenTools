@@ -15,6 +15,12 @@ const (
 	// loading. Version 1 predates streamed result sections.
 	MinimumVersion = 1
 
+	// ContractVersion identifies the shape of the host/tool contract, which
+	// is independent of the process protocol: a host may keep speaking
+	// protocol 2 while adding fields, capabilities and host services. It only
+	// grows when a field changes meaning or is removed.
+	ContractVersion = 2
+
 	JSONRPCVersion = "2.0"
 
 	MethodInitialize = "initialize"
@@ -22,6 +28,35 @@ const (
 	MethodLog        = "tool/log"
 	MethodProgress   = "tool/progress"
 	MethodSection    = "tool/section"
+	// MethodCancel is a host notification asking a tool to stop. The tool
+	// cancels the context passed to Run and reports its cancellation; the
+	// host escalates to terminating the process if it does not comply.
+	MethodCancel = "$/cancel"
+)
+
+// Host service methods a tool may call. Every one of them requires the
+// matching capability to have been granted by initialize.
+const (
+	MethodHostDialogOpenFile = "host/dialog/openFile"
+	MethodHostDialogSaveFile = "host/dialog/saveFile"
+	MethodHostDialogPickDir  = "host/dialog/pickDirectory"
+	MethodHostSecretsGet     = "host/secrets/get"
+	MethodHostSecretsSet     = "host/secrets/set"
+	MethodHostSecretsDelete  = "host/secrets/delete"
+	MethodHostConfigGet      = "host/config/get"
+	MethodHostConfigSet      = "host/config/set"
+	MethodHostNotify         = "host/notify"
+	MethodHostElevate        = "host/elevate"
+)
+
+// Capability names. A tool lists what it needs in Definition.Requires; the
+// host answers with the subset it actually grants.
+const (
+	CapabilitySecrets = "secrets"
+	CapabilityDialogs = "dialogs"
+	CapabilityConfig  = "config"
+	CapabilityNotify  = "notify"
+	CapabilityElevate = "elevate"
 )
 
 // SupportsVersion reports whether the host can load and invoke a plugin that
@@ -61,6 +96,9 @@ const (
 	CodeInternalError  = -32603
 	CodeToolError      = -32000
 	CodeCanceled       = -32800
+	// CodeCapabilityDenied rejects a host service call whose capability was
+	// not granted in Definition.Requires.
+	CodeCapabilityDenied = -32001
 )
 
 // InitializeParams is sent once before a tool invocation.
@@ -69,14 +107,48 @@ type InitializeParams struct {
 	ToolID          string `json:"toolId"`
 	WorkDir         string `json:"workDir"`
 	DataDir         string `json:"dataDir"`
+	// ContractVersion is the host's contract; zero means the host predates
+	// it. A tool may use it to avoid calling a service it cannot rely on.
+	ContractVersion int `json:"contractVersion,omitempty"`
+	// GrantedCapabilities is the subset of Definition.Requires the host
+	// accepts. Absent means "none granted", never "all granted".
+	GrantedCapabilities []string `json:"grantedCapabilities,omitempty"`
+	// Limits are the host budgets echoed back in InitializeResult.
+	Limits Limits `json:"limits,omitempty"`
 }
 
 // InitializeResult confirms that the executable speaks the requested
 // protocol and is the expected tool.
 type InitializeResult struct {
-	ProtocolVersion int    `json:"protocolVersion"`
+	ProtocolVersion int `json:"protocolVersion"`
+	// ContractVersion is the contract the host applies to this session.
+	ContractVersion int    `json:"contractVersion,omitempty"`
 	ToolID          string `json:"toolId"`
 	Version         string `json:"version"`
+	// Capabilities is the granted subset of Definition.Requires. A tool must
+	// not call a host service whose capability is missing; the host rejects
+	// it with CodeCapabilityDenied.
+	Capabilities []string `json:"capabilities,omitempty"`
+	// Limits tells the tool what the host enforces, so a tool can split a
+	// large result instead of having it rejected.
+	Limits Limits `json:"limits,omitempty"`
+}
+
+// Limits are the host budgets for one session.
+type Limits struct {
+	// MaxMessageBytes caps one encoded JSON-RPC message in either direction.
+	MaxMessageBytes int64 `json:"maxMessageBytes,omitempty"`
+	// MaxJobDurationMS is the wall-clock budget of one invocation, zero when
+	// the host does not enforce one.
+	MaxJobDurationMS int64 `json:"maxJobDurationMs,omitempty"`
+	// CancelGraceMS is how long a tool has between "$/cancel" and having its
+	// process terminated.
+	CancelGraceMS int64 `json:"cancelGraceMs,omitempty"`
+}
+
+// CancelParams is the payload of a "$/cancel" notification.
+type CancelParams struct {
+	Reason string `json:"reason,omitempty"`
 }
 
 // RunParams contains the validated input for one tool invocation.

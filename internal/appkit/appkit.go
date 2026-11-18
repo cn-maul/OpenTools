@@ -12,6 +12,7 @@ import (
 
 	"github.com/cn-maul/OpenTools/internal/application"
 	"github.com/cn-maul/OpenTools/internal/catalog"
+	"github.com/cn-maul/OpenTools/internal/hostservice"
 	"github.com/cn-maul/OpenTools/internal/plugins"
 	"github.com/cn-maul/OpenTools/internal/storage/sqlite"
 	"github.com/cn-maul/OpenTools/internal/tasks"
@@ -28,7 +29,11 @@ type App struct {
 }
 
 // Open assembles OpenTools using dataDir for the database and job artifacts.
-func Open(ctx context.Context, dataDir string, logger *slog.Logger) (*App, error) {
+//
+// ui provides the native surfaces tools may request through host services. A
+// nil ui means a headless assembly (the CLI): secrets and config still work,
+// dialogs, notifications and elevation are refused.
+func Open(ctx context.Context, dataDir string, logger *slog.Logger, ui hostservice.UI) (*App, error) {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -53,6 +58,21 @@ func Open(ctx context.Context, dataDir string, logger *slog.Logger) (*App, error
 	if err != nil {
 		return closeOnError(err)
 	}
+
+	services := hostservice.New(hostservice.Options{
+		DataDir: dataDir,
+		UI:      ui,
+		Logger:  logger,
+		Required: func(toolID string) ([]string, bool) {
+			manifest, ok := pluginManager.Manifest(toolID)
+			if !ok {
+				return nil, false
+			}
+			return manifest.Definition.Requires, true
+		},
+	})
+	pluginManager.SetHostServices(services)
+
 	if err := registry.Replace(pluginManager.Tools()); err != nil {
 		return closeOnError(err)
 	}

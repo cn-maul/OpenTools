@@ -11,6 +11,11 @@ HeroUI 3，通过 MyGo WebView 渲染；桌面应用和 CLI 共享同一套应�
 
 ## 架构
 
+文档入口：
+
+- [`docs/plugin-development.md`](docs/plugin-development.md)：面向工具作者，从最小工具到发布；
+- [`docs/plugin-architecture.md`](docs/plugin-architecture.md)：面向维护者，分层、协议与演进规则。
+
 ```text
 MyGo / CLI
     -> internal/application      用例层，不依赖 GUI 或数据库包
@@ -21,6 +26,7 @@ MyGo / CLI
                 -> SQLite
     -> pkg/tool                  仅依赖标准库的工具契约
         -> pkg/tool/pluginproto  带版本号的 JSON-RPC 2.0 进程协议
+        -> pkg/tool/host         工具侧的宿主服务类型化封装
     -> （工具源码不在本仓库）     见 opentool-kit
 ```
 
@@ -47,14 +53,20 @@ data\plugins\<tool-id>\
 
 ## 插件协议
 
-以 `describe` 参数启动可执行文件会打印工具定义；以 `rpc` 参数启动则在标准输入输出上提供 JSON-RPC 服务。宿主先发送 `initialize`，再发送 `tool/run`。插件可以在最终结果之前发送 `tool/log` 和 `tool/progress` 通知。取消任务会终止子进程，因此工具不会在取消后留下孤儿进程。
+以 `describe` 参数启动可执行文件会打印工具定义；以 `rpc` 参数启动则在标准输入输出上提供 JSON-RPC 服务。宿主先发送 `initialize`，再发送 `tool/run`。插件可以在最终结果之前发送 `tool/log`、`tool/progress` 和 `tool/section` 通知，也可以反向调用 `host/*` 服务。
+
+取消采用三段式：宿主先发 `$/cancel` 并关闭 stdin，给工具 3 秒宽限期；工具应让 `Run` 的 `ctx` 及时结束并返回，超时才强制终止进程。因此工具有机会落盘、回滚或清理半完成状态。
 
 ## 开发一个可下载工具
 
+完整教程见 [`docs/plugin-development.md`](docs/plugin-development.md)，包括可编译的最小工具、输入 Schema、结果布局、宿主服务、协议自测和发布检查清单。架构与协议演进规则见 [`docs/plugin-architecture.md`](docs/plugin-architecture.md)。
+
+最小流程：
+
 1. 在 **opentool-kit** 仓库创建 `tools/<name>/tool.go` 并实现 `tool.Tool` 接口。
-2. 使用稳定的工具 ID，并声明所有对外可见的能力（effects）。
-3. 在执行耗时或有副作用的操作前后检查 `ctx`。
-4. 返回非空摘要，且只使用支持的结果区块类型。
+2. 使用稳定的工具 ID，并声明所有对外可见的能力（`effects`）。
+3. 在执行耗时或有副作用的操作前后检查 `ctx`；需要宿主服务时在 `Requires` 中声明。
+4. 返回非空摘要，并且只在 `Blocks` 与 `report.Section` 两种结果模式中选一种。
 5. 在 `cmd/plugins/<name>` 下添加 `pluginproto.Serve(tool)` 可执行入口。
 6. 在 `tools/plugins.json` 登记，然后运行 `publish-store.ps1` 生成 ZIP 与 `catalog.json`。
 

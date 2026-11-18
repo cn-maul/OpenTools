@@ -23,6 +23,8 @@ export interface Artifact {
   name: string;
   path?: string;
   mime?: string;
+  /** Size is filled by the host after it validates the file. */
+  size?: number;
 }
 
 /** BatchAction is one action applied to multiple selected table rows. */
@@ -99,6 +101,13 @@ export interface Definition {
    * the host never needs a table of tool IDs.
    */
   layout?: string;
+  /**
+   * Requires lists the host services the tool calls. The host grants the
+   * intersection of this list and what it implements; a call to anything
+   * else is rejected. Values are pluginproto.Capability* constants; the
+   * strings are duplicated here so this package stays dependency-free.
+   */
+  requires?: string[];
   input: Schema;
 }
 

@@ -41,6 +41,9 @@ type runState struct {
 	done     chan struct{}
 	manager  *Manager
 	lastSave time.Time
+	// input is the validated input handed to the tool. It is kept out of
+	// the persisted snapshot so secrets never reach the database.
+	input map[string]any
 }
 
 // NewManager recovers interrupted jobs and returns a manager.
@@ -77,7 +80,11 @@ const (
 
 // Start creates and launches a job. The context only covers persistence of
 // the initial snapshot; execution is intentionally detached from the caller.
-func (m *Manager) Start(ctx context.Context, t tool.Tool, input map[string]any) (Job, error) {
+//
+// input is the validated input the tool receives. redacted is the same input
+// with secret fields masked, which is what the job persists and shows. When
+// redacted is nil the input is stored as is.
+func (m *Manager) Start(ctx context.Context, t tool.Tool, input, redacted map[string]any) (Job, error) {
 	def := t.Definition()
 	now := time.Now().UTC()
 	id, err := newID(now)
@@ -93,12 +100,22 @@ func (m *Manager) Start(ctx context.Context, t tool.Tool, input map[string]any) 
 		ToolID:    def.ID,
 		Revision:  1,
 		Status:    StatusQueued,
-		Input:     input,
+		Input:     redacted,
 		WorkDir:   workDir,
 		CreatedAt: now,
 	}
+	if job.Input == nil {
+		job.Input = input
+	}
 	runCtx, cancel := context.WithCancel(context.Background())
-	run := &runState{job: job, ctx: runCtx, cancel: cancel, done: make(chan struct{}), manager: m}
+	run := &runState{
+		job:     job,
+		ctx:     runCtx,
+		cancel:  cancel,
+		done:    make(chan struct{}),
+		manager: m,
+		input:   cloneMap(input),
+	}
 
 	m.mu.Lock()
 	m.runs[id] = run
@@ -147,6 +164,10 @@ func (m *Manager) execute(t tool.Tool, run *runState) {
 
 	m.persistAndEmit("job.started", &job)
 
+	// Artifacts are written during the run, so tightening permissions here
+	// (rather than right after Start) is the first moment it can work.
+	m.tightenDir(job.WorkDir)
+
 	var final *tool.Result
 	var runErr error
 	func() {
@@ -156,7 +177,10 @@ func (m *Manager) execute(t tool.Tool, run *runState) {
 				run.report("error", string(debug.Stack()))
 			}
 		}()
-		result, err := t.Run(run.ctx, tool.Input{Values: cloneMap(job.Input)}, tool.Environment{
+		run.mu.Lock()
+		liveInput := cloneMap(run.input)
+		run.mu.Unlock()
+		result, err := t.Run(run.ctx, tool.Input{Values: liveInput}, tool.Environment{
 			WorkDir: job.WorkDir,
 			DataDir: filepath.Dir(m.root),
 		}, reporter{run: run})
@@ -197,6 +221,9 @@ func (m *Manager) execute(t tool.Tool, run *runState) {
 			updated.Error = err.Error()
 		}
 	}
+	if updated.Status == StatusSucceeded || updated.Status == StatusFailed {
+		m.tightenDir(updated.WorkDir)
+	}
 	run.job = updated
 	job = updated
 	run.mu.Unlock()
@@ -222,7 +249,7 @@ func normalizeArtifacts(job *Job) error {
 		if artifact.MIME == "" {
 			artifact.MIME = mimeFor(path)
 		}
-		_ = size
+		artifact.Size = size
 	}
 	return nil
 }
@@ -418,6 +445,11 @@ func (m *Manager) TightenArtifactPermissions(jobID string) {
 	run.mu.Lock()
 	workDir := run.job.WorkDir
 	run.mu.Unlock()
+	m.tightenDir(workDir)
+}
+
+// tightenDir restricts a job directory to the current user.
+func (m *Manager) tightenDir(workDir string) {
 	if workDir == "" {
 		return
 	}

@@ -160,8 +160,8 @@ func (s *Schema) WithGroup(group string) *Schema {
 }
 
 // WithSecret marks a string field so forms render it as a password input.
-// It is presentation-only: the value is still transported and stored the same
-// way as any other field.
+// The host also uses this flag to redact the value before a job snapshot is
+// persisted (see Redact); the tool still receives the real value.
 func (s *Schema) WithSecret() *Schema {
 	out := *s
 	ui := UIHints{}
@@ -236,6 +236,65 @@ func Prepare(s Schema, values map[string]any) (map[string]any, error) {
 		return nil, err
 	}
 	return copied, nil
+}
+
+// RedactedPlaceholder replaces secret field values before they are stored.
+const RedactedPlaceholder = "<redacted>"
+
+// Redact returns a copy of values with every field marked secret in s
+// replaced by RedactedPlaceholder. Callers use it on their way to durable
+// storage so a password or API key never reaches a job snapshot.
+//
+// The returned map is meant for display only; the tool must still be given
+// the original values.
+func Redact(s Schema, values map[string]any) map[string]any {
+	if values == nil {
+		return nil
+	}
+	copied, err := cloneJSONMap(values)
+	if err != nil {
+		copied = make(map[string]any, len(values))
+		for key, value := range values {
+			copied[key] = value
+		}
+	}
+	redactInto(&s, copied)
+	return copied
+}
+
+func redactInto(s *Schema, value any) {
+	if value == nil {
+		return
+	}
+	switch s.Type {
+	case "object":
+		obj, ok := value.(map[string]any)
+		if !ok {
+			return
+		}
+		for name, child := range s.Properties {
+			if child == nil {
+				continue
+			}
+			current, exists := obj[name]
+			if !exists {
+				continue
+			}
+			if child.UI != nil && child.UI.Secret {
+				obj[name] = RedactedPlaceholder
+				continue
+			}
+			redactInto(child, current)
+		}
+	case "array":
+		list, ok := value.([]any)
+		if !ok || s.Items == nil {
+			return
+		}
+		for _, item := range list {
+			redactInto(s.Items, item)
+		}
+	}
 }
 
 func cloneJSONMap(values map[string]any) (map[string]any, error) {

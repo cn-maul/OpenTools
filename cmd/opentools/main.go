@@ -44,7 +44,7 @@ func runDesktop() {
 		fatal(err)
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	app, err := appkit.Open(ctx, dir, logger)
+	app, err := appkit.Open(ctx, dir, logger, desktop.NativeUI{})
 	if err != nil {
 		fatal(err)
 	}

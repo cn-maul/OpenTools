@@ -3,7 +3,6 @@
 package plugins
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,7 +11,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/cn-maul/OpenTools/pkg/tool"
@@ -20,8 +19,12 @@ import (
 )
 
 const (
-	maxProtocolMessage = 16 << 20
-	startupTimeout     = 15 * time.Second
+	startupTimeout = 15 * time.Second
+	// cancelGrace is how long a tool has to stop on its own after "$/cancel"
+	// before the process is terminated.
+	cancelGrace = 3 * time.Second
+	// maxConsoleLine caps one line of tool stderr kept for diagnostics.
+	maxConsoleLine = 8 << 10
 )
 
 // ExternalTool adapts one downloadable executable to the host tool contract.
@@ -29,18 +32,18 @@ type ExternalTool struct {
 	definition tool.Definition
 	executable string
 	protocol   int
-	nextID     atomic.Int64
+	services   tool.HostServices
 }
 
-// NewExternalTool returns a tool backed by an executable.
-func NewExternalTool(def tool.Definition, executable string, protocol int) *ExternalTool {
-	t := &ExternalTool{
+// NewExternalTool returns a tool backed by an executable. services may be nil,
+// in which case every host call the tool makes is rejected.
+func NewExternalTool(def tool.Definition, executable string, protocol int, services tool.HostServices) *ExternalTool {
+	return &ExternalTool{
 		definition: def,
 		executable: executable,
 		protocol:   protocol,
+		services:   services,
 	}
-	t.nextID.Store(0)
-	return t
 }
 
 // Definition implements tool.Tool.
@@ -48,14 +51,27 @@ func (t *ExternalTool) Definition() tool.Definition {
 	return t.definition
 }
 
-// Run implements tool.Tool. Cancellation terminates the child process.
+// grantedCapabilities is the set the host can actually serve. The tool
+// intersects it with its own Definition.Requires during initialize.
+func (t *ExternalTool) grantedCapabilities() []string {
+	if provider, ok := t.services.(interface{ Capabilities() []string }); ok {
+		return provider.Capabilities()
+	}
+	return nil
+}
+
+// Run implements tool.Tool.
+//
+// Cancellation is graceful first: the host sends "$/cancel", waits
+// cancelGrace for the tool to answer, and only then terminates the process.
+// A tool that honors the notification can flush artifacts and roll back.
 func (t *ExternalTool) Run(
 	ctx context.Context,
 	input tool.Input,
 	env tool.Environment,
 	report tool.Reporter,
 ) (tool.Result, error) {
-	cmd := exec.CommandContext(ctx, t.executable, "rpc")
+	cmd := exec.Command(t.executable, "rpc")
 	cmd.Dir = env.WorkDir
 	cmd.WaitDelay = 2 * time.Second
 	if err := hideWindow(cmd); err != nil {
@@ -76,53 +92,98 @@ func (t *ExternalTool) Run(
 	if err := cmd.Start(); err != nil {
 		return tool.Result{}, fmt.Errorf("start tool process: %w", err)
 	}
+	// One goroutine owns cmd.Wait so both the normal path and the
+	// escalation path wait on the same result.
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
 
-	var stderrBuffer limitedBuffer
-	stderrBuffer.limit = 128 << 10
+	var console consoleBuffer
+	console.report = report
 	stderrDone := make(chan struct{})
 	go func() {
 		defer close(stderrDone)
-		_, _ = io.Copy(&stderrBuffer, stderr)
+		console.consume(stderr)
 	}()
 
-	encoder := json.NewEncoder(stdin)
-	call := rpcCaller{
-		decoder:    json.NewDecoder(bufio.NewReaderSize(stdout, 64<<10)),
-		encoder:    encoder,
-		report:     report,
-		nextID:     &t.nextID,
-		executable: t.executable,
+	conn := pluginproto.NewConn(stdout, stdin)
+	conn.SetMaxMessageBytes(pluginproto.DefaultMaxMessageBytes)
+	conn.OnNotification = func(method string, params json.RawMessage) {
+		handleNotification(method, params, report)
+	}
+	conn.OnRequest = t.hostRequest
+
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- conn.Serve()
+	}()
+
+	var closeOnce sync.Once
+	closeStdin := func() {
+		closeOnce.Do(func() { _ = stdin.Close() })
+	}
+	var killOnce sync.Once
+	kill := func() {
+		killOnce.Do(func() { _ = cmd.Process.Kill() })
 	}
 
-	cleanup := func() {
-		_ = stdin.Close()
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		<-stderrDone
-	}
+	// A single supervisor owns the process outcome, so exactly one goroutine
+	// calls Wait and exactly one kill decision reaches the OS.
+	procDone := make(chan error, 1)
+	go func() {
+		select {
+		case <-ctx.Done():
+			// Notify first, then close stdin: EOF is an independent stop
+			// signal for tools that do not read notifications. Closing
+			// stdin before the notification would make the write fail and
+			// the tool would never see "$/cancel".
+			_ = conn.Notify(pluginproto.MethodCancel, pluginproto.CancelParams{Reason: "host requested cancellation"})
+			closeStdin()
+			timer := time.NewTimer(cancelGrace)
+			defer timer.Stop()
+			select {
+			case err := <-waitDone:
+				procDone <- err
+			case <-timer.C:
+				kill()
+				procDone <- <-waitDone
+			}
+		case err := <-waitDone:
+			procDone <- err
+		}
+	}()
 
-	initCtx, cancel := context.WithTimeout(ctx, startupTimeout)
+	initCtx, cancelInit := context.WithTimeout(ctx, startupTimeout)
 	initParams := pluginproto.InitializeParams{
-		ProtocolVersion: t.protocol,
-		ToolID:          t.definition.ID,
-		WorkDir:         env.WorkDir,
-		DataDir:         env.DataDir,
+		ProtocolVersion:     t.protocol,
+		ContractVersion:     pluginproto.ContractVersion,
+		ToolID:              t.definition.ID,
+		WorkDir:             env.WorkDir,
+		DataDir:             env.DataDir,
+		GrantedCapabilities: t.grantedCapabilities(),
+		Limits: pluginproto.Limits{
+			MaxMessageBytes: pluginproto.DefaultMaxMessageBytes,
+			CancelGraceMS:   cancelGrace.Milliseconds(),
+		},
 	}
 	var initialized pluginproto.InitializeResult
-	if err := call.request(initCtx, pluginproto.MethodInitialize, initParams, &initialized); err != nil {
-		cancel()
-		cleanup()
+	initErr := conn.Request(initCtx, pluginproto.MethodInitialize, initParams, &initialized)
+	cancelInit()
+	if initErr != nil {
+		kill()
+		<-procDone
+		<-stderrDone
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return tool.Result{}, context.Canceled
 		}
-		if detail := strings.TrimSpace(stderrBuffer.String()); detail != "" {
-			return tool.Result{}, fmt.Errorf("%w: %s", err, detail)
+		if detail := console.String(); detail != "" {
+			return tool.Result{}, fmt.Errorf("%w: %s", initErr, detail)
 		}
-		return tool.Result{}, err
+		return tool.Result{}, initErr
 	}
-	cancel()
 	if initialized.ProtocolVersion != t.protocol || initialized.ToolID != t.definition.ID {
-		cleanup()
+		kill()
+		<-procDone
+		<-stderrDone
 		return tool.Result{}, fmt.Errorf(
 			"tool process identity mismatch: protocol=%d tool=%q",
 			initialized.ProtocolVersion,
@@ -131,23 +192,44 @@ func (t *ExternalTool) Run(
 	}
 
 	var result tool.Result
-	runErr := call.request(ctx, pluginproto.MethodRun, pluginproto.RunParams{Input: input.Values}, &result)
-	_ = stdin.Close()
+	runErr := conn.Request(ctx, pluginproto.MethodRun, pluginproto.RunParams{Input: input.Values}, &result)
+
+	// Closing stdin ends the tool's read loop, which is the normal exit
+	// path. When the caller canceled, the supervisor does this itself right
+	// after the notification; closing here would race that write.
+	if ctx.Err() == nil {
+		closeStdin()
+	}
+	var waitErr error
+	select {
+	case waitErr = <-procDone:
+	case <-time.After(cancelGrace + 2*time.Second):
+		kill()
+		waitErr = <-procDone
+	}
+	waitFor(serveDone, stderrDone)
+	console.flush()
+
 	if errors.Is(ctx.Err(), context.Canceled) {
-		_ = cmd.Process.Kill()
-		<-stderrDone
 		return tool.Result{}, context.Canceled
 	}
-	waitErr := cmd.Wait()
-	<-stderrDone
 	if runErr != nil {
-		if detail := strings.TrimSpace(stderrBuffer.String()); detail != "" {
+		var remote *pluginproto.RemoteError
+		if errors.As(runErr, &remote) {
+			switch remote.Code {
+			case pluginproto.CodeCanceled:
+				return tool.Result{}, context.Canceled
+			case pluginproto.CodeToolError:
+				return tool.Result{}, errors.New(remote.Message)
+			}
+		}
+		if detail := console.String(); detail != "" {
 			return tool.Result{}, fmt.Errorf("%w: %s", runErr, detail)
 		}
 		return tool.Result{}, runErr
 	}
 	if waitErr != nil {
-		if detail := strings.TrimSpace(stderrBuffer.String()); detail != "" {
+		if detail := console.String(); detail != "" {
 			return tool.Result{}, fmt.Errorf("tool process failed: %s", detail)
 		}
 		return tool.Result{}, fmt.Errorf("tool process failed: %w", waitErr)
@@ -158,164 +240,143 @@ func (t *ExternalTool) Run(
 	return result, nil
 }
 
-type rpcCaller struct {
-	decoder    *json.Decoder
-	encoder    *json.Encoder
-	report     tool.Reporter
-	nextID     *atomic.Int64
-	executable string
-}
-
-func (c *rpcCaller) request(
-	ctx context.Context,
-	method string,
-	params any,
-	target any,
-) error {
-	// IDs must be positive and non-zero for JSON-RPC.
-	id := c.nextID.Add(1)
-	data, err := json.Marshal(params)
-	if err != nil {
-		return fmt.Errorf("encode %s request: %w", method, err)
-	}
-	if err := c.encoder.Encode(pluginproto.Request{
-		JSONRPC: pluginproto.JSONRPCVersion,
-		ID:      &id,
-		Method:  method,
-		Params:  data,
-	}); err != nil {
-		return fmt.Errorf("write %s request: %w", method, err)
-	}
-
-	type decoded struct {
-		response pluginproto.Response
-		err      error
-	}
-	// json.Decoder blocks outside the context. The child process is killed by
-	// CommandContext, which closes stdout and unblocks the goroutine.
-	ch := make(chan decoded, 1)
-	go func() {
-		for {
-			var response pluginproto.Response
-			raw, readErr := readJSONObject(c.decoder)
-			if readErr != nil {
-				ch <- decoded{err: fmt.Errorf("read %s response: %w", method, readErr)}
-				return
-			}
-			if err := json.Unmarshal(raw, &response); err != nil {
-				ch <- decoded{err: fmt.Errorf("decode %s response: %w", method, err)}
-				return
-			}
-			if response.JSONRPC != pluginproto.JSONRPCVersion {
-				ch <- decoded{err: fmt.Errorf("tool returned invalid JSON-RPC version")}
-				return
-			}
-			if response.ID == nil {
-				var notification pluginproto.Request
-				if err := json.Unmarshal(raw, &notification); err != nil {
-					ch <- decoded{err: fmt.Errorf("decode tool notification: %w", err)}
-					return
-				}
-				if err := c.handleNotification(notification); err != nil {
-					ch <- decoded{err: err}
-					return
-				}
-				continue
-			}
-			if *response.ID != id {
-				ch <- decoded{err: fmt.Errorf("unexpected response id %d (want %d)", *response.ID, id)}
-				return
-			}
-			ch <- decoded{response: response}
-			return
-		}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case item := <-ch:
-		if item.err != nil {
-			return item.err
-		}
-		if item.response.Error != nil {
-			return errors.New(item.response.Error.Message)
-		}
-		if target == nil {
-			return nil
-		}
-		if len(item.response.Result) == 0 {
-			return fmt.Errorf("%s returned no result", method)
-		}
-		if err := json.Unmarshal(item.response.Result, target); err != nil {
-			return fmt.Errorf("decode %s result: %w", method, err)
-		}
-		return nil
-	}
-}
-
-func (c *rpcCaller) handleNotification(request pluginproto.Request) error {
-	switch request.Method {
-	case pluginproto.MethodLog:
-		var params pluginproto.LogParams
-		if err := json.Unmarshal(request.Params, &params); err != nil {
-			return fmt.Errorf("decode tool log: %w", err)
-		}
-		c.report.Log(params.Level, params.Message)
-	case pluginproto.MethodProgress:
-		var params pluginproto.ProgressParams
-		if err := json.Unmarshal(request.Params, &params); err != nil {
-			return fmt.Errorf("decode tool progress: %w", err)
-		}
-		c.report.Progress(params.Done, params.Total)
-	case pluginproto.MethodSection:
-		var params pluginproto.SectionParams
-		if err := json.Unmarshal(request.Params, &params); err != nil {
-			return fmt.Errorf("decode tool section: %w", err)
-		}
-		if err := tool.ValidateSection(params.Section); err != nil {
-			return fmt.Errorf("invalid tool section: %w", err)
-		}
-		c.report.Section(params.Section)
-	default:
-		return fmt.Errorf("tool %s sent unsupported notification %q", c.executable, request.Method)
-	}
-	return nil
-}
-
-func readJSONObject(decoder *json.Decoder) (json.RawMessage, error) {
-	var raw json.RawMessage
-	if err := decoder.Decode(&raw); err != nil {
+// hostRequest answers a call the tool made into the host.
+func (t *ExternalTool) hostRequest(ctx context.Context, method string, params json.RawMessage) (any, error) {
+	if err := pluginproto.CheckGranted(t.definition.Requires, method); err != nil {
 		return nil, err
 	}
-	if len(raw) > maxProtocolMessage {
-		return nil, fmt.Errorf("protocol message exceeds %d bytes", maxProtocolMessage)
-	}
-	if len(bytes.TrimSpace(raw)) == 0 || bytes.TrimSpace(raw)[0] != '{' {
-		return nil, errors.New("protocol message is not a JSON object")
-	}
-	return raw, nil
-}
-
-type limitedBuffer struct {
-	data  bytes.Buffer
-	limit int
-}
-
-func (b *limitedBuffer) Write(data []byte) (int, error) {
-	original := len(data)
-	remaining := b.limit - b.data.Len()
-	if remaining > 0 {
-		if len(data) > remaining {
-			data = data[:remaining]
+	if t.services == nil {
+		return nil, &pluginproto.RemoteError{
+			Code:    pluginproto.CodeCapabilityDenied,
+			Message: "this host grants no capabilities",
 		}
-		_, _ = b.data.Write(data)
 	}
-	return original, nil
+	var decoded any
+	if len(params) > 0 && string(params) != "null" {
+		if err := json.Unmarshal(params, &decoded); err != nil {
+			return nil, &pluginproto.RemoteError{Code: pluginproto.CodeInvalidParams, Message: "invalid host params"}
+		}
+	}
+	raw, err := json.Marshal(decoded)
+	if err != nil {
+		return nil, &pluginproto.RemoteError{Code: pluginproto.CodeInvalidParams, Message: "invalid host params"}
+	}
+	return t.services.Handle(ctx, t.definition.ID, method, raw)
 }
 
-func (b *limitedBuffer) String() string {
-	return b.data.String()
+// waitFor drains the remaining pipes after the process exited.
+func waitFor(serveDone <-chan error, stderrDone <-chan struct{}) {
+	select {
+	case <-serveDone:
+	case <-time.After(2 * time.Second):
+	}
+	select {
+	case <-stderrDone:
+	case <-time.After(2 * time.Second):
+	}
+}
+
+func handleNotification(method string, params json.RawMessage, report tool.Reporter) {
+	// A missing reporter must not turn an incoming notification into a panic:
+	// this runs on the connection reader goroutine, so a panic there would
+	// take the whole host down.
+	if report == nil {
+		return
+	}
+	switch method {
+	case pluginproto.MethodLog:
+		var decoded pluginproto.LogParams
+		if err := json.Unmarshal(params, &decoded); err != nil {
+			return
+		}
+		report.Log(decoded.Level, decoded.Message)
+	case pluginproto.MethodProgress:
+		var decoded pluginproto.ProgressParams
+		if err := json.Unmarshal(params, &decoded); err != nil {
+			return
+		}
+		report.Progress(decoded.Done, decoded.Total)
+	case pluginproto.MethodSection:
+		var decoded pluginproto.SectionParams
+		if err := json.Unmarshal(params, &decoded); err != nil {
+			return
+		}
+		if tool.ValidateSection(decoded.Section) != nil {
+			return
+		}
+		report.Section(decoded.Section)
+	default:
+		// A newer tool may send notifications this host does not know. That
+		// is forward compatibility, not an error: drop it and keep going.
+	}
+}
+
+// consoleBuffer forwards tool stderr to the job log line by line while
+// keeping a bounded tail for error messages.
+type consoleBuffer struct {
+	mu     sync.Mutex
+	data   bytes.Buffer
+	line   bytes.Buffer
+	report tool.Reporter
+}
+
+func (b *consoleBuffer) consume(reader io.Reader) {
+	buffer := make([]byte, 4096)
+	for {
+		n, err := reader.Read(buffer)
+		if n > 0 {
+			b.write(buffer[:n])
+		}
+		if err != nil {
+			b.flush()
+			return
+		}
+	}
+}
+
+func (b *consoleBuffer) write(data []byte) {
+	b.mu.Lock()
+	var lines []string
+	for _, char := range data {
+		if char == '\n' {
+			lines = append(lines, strings.TrimRight(b.line.String(), "\r"))
+			b.line.Reset()
+			continue
+		}
+		if b.line.Len() < maxConsoleLine {
+			b.line.WriteByte(char)
+		}
+	}
+	if b.data.Len() < maxConsoleLine*4 {
+		b.data.Write(data)
+	}
+	report := b.report
+	b.mu.Unlock()
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if report != nil {
+			report.Log("stderr", line)
+		}
+	}
+}
+
+func (b *consoleBuffer) flush() {
+	b.mu.Lock()
+	line := strings.TrimSpace(b.line.String())
+	b.line.Reset()
+	report := b.report
+	b.mu.Unlock()
+	if line != "" && report != nil {
+		report.Log("stderr", line)
+	}
+}
+
+func (b *consoleBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return strings.TrimSpace(b.data.String())
 }
 
 var _ tool.Tool = (*ExternalTool)(nil)

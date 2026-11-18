@@ -81,7 +81,7 @@ func openApp(ctx context.Context) (*appkit.App, func(), error) {
 		return nil, func() {}, err
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	app, err := appkit.Open(ctx, dir, logger)
+	app, err := appkit.Open(ctx, dir, logger, nil)
 	if err != nil {
 		return nil, func() {}, err
 	}

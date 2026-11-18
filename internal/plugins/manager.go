@@ -43,6 +43,7 @@ type Manager struct {
 	client   *http.Client
 	catalog  tool.StoreSnapshot
 	lastLoad error
+	services tool.HostServices
 }
 
 type loadedPackage struct {
@@ -89,9 +90,26 @@ func (m *Manager) Tools() []tool.Tool {
 			item.manifest.Definition,
 			item.exe,
 			item.manifest.ProtocolVersion,
+			m.services,
 		))
 	}
 	return tools
+}
+
+// SetHostServices installs the dispatcher used for tool-initiated calls.
+// It must be set before tools run; later calls pick it up on the next
+// install, refresh or reload.
+func (m *Manager) SetHostServices(services tool.HostServices) {
+	m.mu.Lock()
+	m.services = services
+	m.mu.Unlock()
+}
+
+// HostServices returns the current dispatcher, if any.
+func (m *Manager) HostServices() tool.HostServices {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.services
 }
 
 // Reload re-scans the installation directory.
@@ -252,10 +270,11 @@ func (m *Manager) Install(ctx context.Context, item tool.Package) error {
 		return err
 	}
 	destination := filepath.Join(m.root, safeID(manifest.Definition.ID))
+	var backup string
 	if _, err := os.Stat(destination); err == nil {
 		// 用带时间戳的唯一备份名：固定的 .old 一旦因文件占用清理失败，
 		// 会一直卡住后续更新。rename 失败时短暂重试，等杀毒软件放开新文件。
-		backup := destination + ".old-" + fmt.Sprint(time.Now().UnixNano())
+		backup = destination + ".old-" + fmt.Sprint(time.Now().UnixNano())
 		var renameErr error
 		for attempt := 0; attempt < 5; attempt++ {
 			renameErr = os.Rename(destination, backup)
@@ -267,25 +286,25 @@ func (m *Manager) Install(ctx context.Context, item tool.Package) error {
 		if renameErr != nil {
 			return fmt.Errorf("替换已安装工具失败：%w", renameErr)
 		}
-		// 新写入的 exe 短时间内可能被杀毒软件占用，后台重试清理，
-		// 不阻塞安装完成；即使残留也只是无害的 .old-* 目录。
-		defer func() {
-			go func() {
-				for attempt := 0; attempt < 10; attempt++ {
-					if os.RemoveAll(backup) == nil {
-						return
-					}
-					time.Sleep(time.Second)
-				}
-			}()
-		}()
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("检查已安装工具失败：%w", err)
 	}
 	if err := os.Rename(stage, destination); err != nil {
-		return fmt.Errorf("启用新工具失败：%w", err)
+		// Enabling the new version failed after the old one was moved aside.
+		// Put the old version back so a failed upgrade never removes a tool.
+		if backup != "" {
+			if restoreErr := os.Rename(backup, destination); restoreErr != nil {
+				return fmt.Errorf("启用新工具失败：%w（旧版本回滚也失败，备份在 %s）", err, backup)
+			}
+		}
+		return fmt.Errorf("启用新工具失败，已回滚到原版本：%w", err)
 	}
 	cleanup = false
+	if backup != "" {
+		// 新写入的 exe 短时间内可能被杀毒软件占用，后台重试清理，
+		// 不阻塞安装完成；即使残留也只是无害的 .old-* 目录。
+		go removeWithRetry(backup)
+	}
 	installed := loadedPackage{
 		manifest: manifest,
 		dir:      destination,
@@ -337,6 +356,11 @@ func (m *Manager) reload() error {
 	next := make(map[string]loadedPackage, len(manifestPaths))
 	var problems []string
 	for _, path := range manifestPaths {
+		// Install and upgrade leave staging and backup directories behind
+		// when the filesystem is busy. They are not installable versions.
+		if isTransientDir(filepath.Base(filepath.Dir(path))) {
+			continue
+		}
 		manifest, err := readManifest(path)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("%s: %v", path, err))
@@ -837,6 +861,25 @@ func validateSource(source string) error {
 
 func platform() string {
 	return runtime.GOOS + "/" + runtime.GOARCH
+}
+
+// isTransientDir reports whether a plugin directory name belongs to an
+// in-progress install or a leftover backup, none of which are installable.
+func isTransientDir(name string) bool {
+	return strings.HasPrefix(name, ".install-") ||
+		strings.Contains(name, ".old-") ||
+		strings.Contains(name, ".remove-")
+}
+
+// removeWithRetry deletes a leftover backup directory, retrying because
+// antivirus scanners briefly hold freshly written executables on Windows.
+func removeWithRetry(path string) {
+	for attempt := 0; attempt < 10; attempt++ {
+		if os.RemoveAll(path) == nil {
+			return
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 func compatible(item tool.Package, version string) bool {

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Version is the current OpenTools tool contract version.
@@ -32,25 +33,30 @@ const (
 
 // Definition is the stable, serializable description of a tool.
 type Definition struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Summary     string   `json:"summary"`
-	Description string   `json:"description,omitempty"`
-	Category    string   `json:"category"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Summary     string `json:"summary"`
+	Description string `json:"description,omitempty"`
+	Category    string `json:"category"`
 	// Icon is optional and fully self-describing: "svg:<path>|<path>" holds
 	// one or more SVG path definitions rendered by the host in a 24x24
 	// viewBox. Any other value renders a letter mark, so tools never rely on
 	// host-side icon tables.
-	Icon        string   `json:"icon,omitempty"`
-	Keywords    []string `json:"keywords,omitempty"`
-	Version     string   `json:"version"`
-	Effects     []Effect `json:"effects,omitempty"`
+	Icon     string   `json:"icon,omitempty"`
+	Keywords []string `json:"keywords,omitempty"`
+	Version  string   `json:"version"`
+	Effects  []Effect `json:"effects,omitempty"`
 	// Layout selects how the host groups a tool's result sections. "tabs"
 	// puts them behind a tab strip instead of stacking every section; any
 	// other value keeps the default stacked view. Tools own this choice so
 	// the host never needs a table of tool IDs.
 	Layout string `json:"layout,omitempty"`
-	Input       Schema   `json:"input"`
+	// Requires lists the host services the tool calls. The host grants the
+	// intersection of this list and what it implements; a call to anything
+	// else is rejected. Values are pluginproto.Capability* constants; the
+	// strings are duplicated here so this package stays dependency-free.
+	Requires []string `json:"requires,omitempty"`
+	Input    Schema   `json:"input"`
 }
 
 // Input holds the JSON-shaped arguments of one invocation.
@@ -82,6 +88,68 @@ type Environment struct {
 	// DataDir is the per-user OpenTools data directory. Tools should use it
 	// only for small, durable state that must outlive one job.
 	DataDir string
+
+	// Host answers host service calls. It is nil when the tool runs without
+	// a host (for example a standalone test). A tool should treat a nil Host
+	// as "no capabilities granted" and degrade instead of failing.
+	Host Host
+}
+
+// Limits are the budgets the host enforces for one invocation.
+type Limits struct {
+	// MaxMessageBytes caps one protocol message in either direction.
+	MaxMessageBytes int64
+	// MaxJobDuration is the wall-clock budget; zero means unlimited.
+	MaxJobDuration time.Duration
+	// CancelGrace is the delay between a cancellation request and forced
+	// termination of the process.
+	CancelGrace time.Duration
+}
+
+// Host is the tool-side view of the host services granted to this run.
+//
+// Call is the only primitive: it sends a host/* request and decodes the
+// result. Typed helpers live in github.com/cn-maul/OpenTools/pkg/tool/host.
+// A call for a capability the host did not grant fails with
+// pluginproto.CodeCapabilityDenied.
+type Host interface {
+	Call(ctx context.Context, method string, params, result any) error
+	// Capabilities lists the granted capability names.
+	Capabilities() []string
+	// Granted reports whether one capability is available.
+	Granted(capability string) bool
+	Limits() Limits
+}
+
+// HostServices is the host-side dispatch point for tool-initiated calls.
+//
+// It is deliberately one method: the process adapter forwards a request and
+// the application layer decides what it means. That keeps new services from
+// changing the plugin protocol or this package.
+type HostServices interface {
+	Handle(ctx context.Context, toolID, method string, params json.RawMessage) (any, error)
+}
+
+// ElevateRequest describes one command a tool asks the host to run with
+// administrator rights. The host owns the UAC prompt and the process launch;
+// the tool only receives the exit status and captured output.
+type ElevateRequest struct {
+	// Title is shown in the confirmation prompt.
+	Title string `json:"title"`
+	// Program is the executable to run, normally powershell.exe.
+	Program string `json:"program"`
+	// Args are passed verbatim.
+	Args []string `json:"args,omitempty"`
+	// Script is an optional script the host writes to a temporary file and
+	// runs, which avoids quoting problems with long or non-ASCII arguments.
+	Script string `json:"script,omitempty"`
+}
+
+// ElevateResult is the outcome of an elevated command.
+type ElevateResult struct {
+	ExitCode int    `json:"exitCode"`
+	Stdout   string `json:"stdout,omitempty"`
+	Stderr   string `json:"stderr,omitempty"`
 }
 
 // Reporter receives progress and log messages for a running invocation.

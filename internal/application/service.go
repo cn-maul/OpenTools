@@ -51,11 +51,10 @@ func (s *Service) Start(ctx context.Context, toolID string, values map[string]an
 	if err != nil {
 		return tasks.Job{}, err
 	}
-	job, err := s.jobs.Start(ctx, t, input)
-	if err == nil {
-		s.jobs.TightenArtifactPermissions(job.ID)
-	}
-	return job, err
+	// Persist and display only the redacted form; the tool still receives
+	// the real values.
+	redacted := tool.Redact(def.Input, input)
+	return s.jobs.Start(ctx, t, input, redacted)
 }
 
 // Get returns a job snapshot.

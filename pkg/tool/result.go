@@ -150,6 +150,8 @@ type Artifact struct {
 	Name string `json:"name"`
 	Path string `json:"path,omitempty"`
 	MIME string `json:"mime,omitempty"`
+	// Size is filled by the host after it validates the file.
+	Size int64 `json:"size,omitempty"`
 }
 
 // Action is a follow-up invocation of the tool that produced the result.
