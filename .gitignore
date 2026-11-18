@@ -10,5 +10,6 @@ data/
 *.db-wal
 *.log
 uitest/
+work/
 store/
 .gitee-test/

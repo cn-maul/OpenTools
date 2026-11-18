@@ -42,12 +42,29 @@ if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
     $configPath = Join-Path $root "mygo.config.ts"
 }
 if ($configPath.EndsWith(".json")) {
-    $configVersion = (Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json).version
+    $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    $configVersion = $config.version
+    # mygo build names the Windows installer <slug>-setup-<version>-<arch>.exe.
+    $configSlug = if ($config.PSObject.Properties["slug"] -and $config.slug) {
+        $config.slug
+    } else {
+        $config.name.ToLowerInvariant()
+    }
 } else {
     $configVersion = (
         Select-String -LiteralPath $configPath -Pattern 'version:\s*"([^"]+)"' |
             Select-Object -First 1
     ).Matches.Groups[1].Value
+    $configSlug = (
+        Select-String -LiteralPath $configPath -Pattern 'slug:\s*"([^"]+)"' |
+            Select-Object -First 1
+    ).Matches.Groups[1].Value
+    if (-not $configSlug) {
+        $configSlug = (
+            Select-String -LiteralPath $configPath -Pattern 'name:\s*"([^"]+)"' |
+                Select-Object -First 1
+        ).Matches.Groups[1].Value.ToLowerInvariant()
+    }
 }
 if ($Version -ne $configVersion) {
     throw "Version mismatch: -Version $Version, $(Split-Path $configPath -Leaf) $configVersion."
@@ -275,8 +292,14 @@ $catalog = [ordered]@{
 }
 $catalog | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath (Join-Path $storeDir "catalog.json") -Encoding utf8NoBOM
 
-$installer = Join-Path $root "build\$safePlatform\OpenTools Setup $Version amd64.exe"
-if (-not $ExeOnly -and $Platform -eq "windows/amd64" -and (Test-Path -LiteralPath $installer -PathType Leaf)) {
+$arch = $Platform.Split("/")[1]
+$installerName = "$configSlug-setup-$Version-$arch.exe"
+$installer = Join-Path $root "build\$safePlatform\$installerName"
+if (-not $ExeOnly -and $Platform.StartsWith("windows/")) {
+    # A missing installer is a broken release, not a reason to ship exe-only.
+    if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+        throw "Installer missing: $installer. Run 'go tool mygo build -platform $Platform' without -skip-installer."
+    }
     Copy-Item -LiteralPath $installer -Destination $targetDir -Force
 }
 
