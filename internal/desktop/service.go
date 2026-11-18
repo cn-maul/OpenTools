@@ -10,10 +10,10 @@ import (
 
 	"github.com/egoist/mygo"
 
-	"opentools/internal/appdata"
-	"opentools/internal/application"
-	"opentools/internal/tasks"
-	"opentools/pkg/tool"
+	"github.com/cn-maul/OpenTools/internal/appdata"
+	"github.com/cn-maul/OpenTools/internal/application"
+	"github.com/cn-maul/OpenTools/internal/tasks"
+	"github.com/cn-maul/OpenTools/pkg/tool"
 )
 
 // Jobs is bound to the frontend as the Jobs service.

@@ -10,6 +10,19 @@ param(
 
     [string]$OutRoot = (Join-Path $PSScriptRoot "release"),
 
+    # Tool repositories to build plugins from, in order. Each must expose
+    # tools/plugins.json and cmd/plugins/<name>. The repository is expected
+    # to replace github.com/cn-maul/OpenTools with its local checkout.
+    [string[]]$ToolRepository = @(),
+
+    # Where the primary tool repository lives when it is not a sibling of
+    # this checkout. Defaults to ..\opentool-kit.
+    [string]$ToolRepositoryRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) "opentool-kit"),
+
+    # Build the core with no plugins at all, ignoring the default tool
+    # repository. Useful for verifying the framework on its own.
+    [switch]$CoreOnly,
+
     [switch]$ExeOnly,
 
     [switch]$SkipChecks,
@@ -38,6 +51,39 @@ $safePlatform = $Platform.Replace("/", "-")
 $baseName = "$safePlatform-$Version"
 $targetDir = Join-Path (Join-Path $outRootPath $baseName) $stamp
 $pluginRoot = Join-Path $root "build\plugins"
+
+if (-not $ToolRepository -or $ToolRepository.Count -eq 0) {
+    if ($CoreOnly) {
+        $ToolRepository = @()
+    } elseif (Test-Path -LiteralPath $ToolRepositoryRoot -PathType Container) {
+        $ToolRepository = @($ToolRepositoryRoot)
+    }
+}
+
+# Each tool repository contributes its own plugins. The core never carries
+# business tools, so a build without any repository produces a bare app.
+$pluginList = @()
+foreach ($repository in $ToolRepository) {
+    $repositoryPath = [System.IO.Path]::GetFullPath($repository)
+    $manifest = Join-Path $repositoryPath "tools\plugins.json"
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+        throw "Tool repository $repositoryPath has no tools\plugins.json."
+    }
+    foreach ($plugin in (Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json).plugins) {
+        $pluginList += [pscustomobject]@{
+            Name       = $plugin.name
+            Output     = $plugin.output
+            Author     = $plugin.author
+            Homepage   = $plugin.homepage
+            Repository = $repositoryPath
+        }
+    }
+}
+if ($ToolRepository -and $pluginList.Count -eq 0) {
+    throw "No plugins defined in the tool repositories' tools\plugins.json."
+}
+
+$extension = if ($Platform.StartsWith("windows/")) { ".exe" } else { "" }
 
 function Invoke-Checked {
     param(
@@ -81,6 +127,16 @@ Write-Host "  version  : $Version"
 Write-Host "  output   : $targetDir"
 
 if (-not $SkipChecks) {
+    $strayTools = @()
+    foreach ($relative in @("tools", "cmd\plugins")) {
+        $candidate = Join-Path $root $relative
+        if (Test-Path -LiteralPath $candidate) {
+            $strayTools += $relative
+        }
+    }
+    if ($strayTools.Count -gt 0) {
+        throw "The core repository must not contain business tools: $($strayTools -join ', ')."
+    }
     Invoke-Checked { Set-Location $root; go test ./... } "Go checks"
     Invoke-Checked { Set-Location $root; go vet ./... } "Go vet"
     Invoke-Checked { Set-Location $root; npm run typecheck } "TypeScript checks"
@@ -98,23 +154,20 @@ Invoke-Checked {
         Remove-Item -LiteralPath $pluginRoot -Recurse -Force
     }
     New-Item -ItemType Directory -Path $pluginRoot -Force | Out-Null
-    $extension = if ($Platform.StartsWith("windows/")) { ".exe" } else { "" }
     $goos, $goarch = $Platform.Split("/")
-    foreach ($plugin in @(
-        @{ Name = "networkconfig"; Output = "network-config" },
-        @{ Name = "laninventory"; Output = "lan-inventory" },
-        @{ Name = "systemconfig"; Output = "system-inventory" },
-        @{ Name = "printercheck"; Output = "printer-check" },
-        @{ Name = "crashdiag"; Output = "crash-diagnostics" },
-        @{ Name = "govdoc"; Output = "govdoc-format" }
-    )) {
+    foreach ($plugin in $pluginList) {
         $env:GOOS = $goos
         $env:GOARCH = $goarch
         $env:CGO_ENABLED = "0"
         $output = Join-Path $pluginRoot ($plugin.Output + $extension)
-        & go build -trimpath -ldflags="-s -w" -o $output "./cmd/plugins/$($plugin.Name)"
+        Push-Location $plugin.Repository
+        try {
+            & go build -trimpath -ldflags="-s -w" -o $output "./cmd/plugins/$($plugin.Name)"
+        } finally {
+            Pop-Location
+        }
         if ($LASTEXITCODE -ne 0) {
-            throw "Plugin build failed: $($plugin.Name)"
+            throw "Plugin build failed: $($plugin.Name) ($($plugin.Repository))"
         }
     }
     Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
@@ -136,81 +189,42 @@ $storeDir = Join-Path $targetDir "store"
 $packagesDir = Join-Path $storeDir "packages"
 New-Item -ItemType Directory -Path $packagesDir -Force | Out-Null
 $catalogTools = @()
-$pluginSpecs = @(
-    @{
-        Name = "network-config"
-        Executable = "network-config.exe"
-        Package = "network-config-1.2.0.zip"
-        Author = "OpenTools"
-        Homepage = "https://github.com/"
-    },
-    @{
-        Name = "lan-inventory"
-        Executable = "lan-inventory.exe"
-        Package = "lan-inventory-1.3.0.zip"
-        Author = "OpenTools"
-        Homepage = "https://github.com/"
-    },
-    @{
-        Name = "system-inventory"
-        Executable = "system-inventory.exe"
-        Package = "system-inventory-1.3.0.zip"
-        Author = "OpenTools"
-        Homepage = "https://github.com/"
-    },
-    @{
-        Name = "printer-check"
-        Executable = "printer-check.exe"
-        Package = "printer-check-1.2.0.zip"
-        Author = "OpenTools"
-        Homepage = "https://github.com/"
-    },
-    @{
-        Name = "crash-diagnostics"
-        Executable = "crash-diagnostics.exe"
-        Package = "crash-diagnostics-1.0.0.zip"
-        Author = "OpenTools"
-        Homepage = "https://github.com/"
-    },
-    @{
-        Name = "govdoc-format"
-        Executable = "govdoc-format.exe"
-        Package = "govdoc-format-1.0.0.zip"
-        Author = "GovDoc"
-        Homepage = "https://github.com/"
-    }
-)
 
-foreach ($spec in $pluginSpecs) {
-    $source = Join-Path $pluginRoot $spec.Executable
+foreach ($plugin in $pluginList) {
+    $pluginExe = $plugin.Output + $extension
+    $source = Join-Path $pluginRoot $pluginExe
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
         throw "Plugin executable missing: $source"
     }
     $description = & $source describe
     if ($LASTEXITCODE -ne 0) {
-        throw "Plugin describe failed: $($spec.Name)"
+        throw "Plugin describe failed: $($plugin.Output)"
     }
     $definition = $description | ConvertFrom-Json
-    $packageDir = Join-Path $packagesDir $spec.Name
+    if (-not $definition.version) {
+        throw "Plugin $($plugin.Output) did not report a version"
+    }
+    $packageName = "$($plugin.Output)-$($definition.version).zip"
+    $packageDir = Join-Path $packagesDir $plugin.Output
     $manifest = [ordered]@{
         schemaVersion = 1
         protocolVersion = 2
         platform = $Platform
-        executable = $spec.Executable
-        author = $spec.Author
-        homepage = $spec.Homepage
+        executable = $pluginExe
+        author = $plugin.Author
+        homepage = $plugin.Homepage
         license = "MIT"
         definition = $definition
     }
-    $stagingDir = Join-Path $pluginRoot ("package-" + $spec.Name)
+    $stagingDir = Join-Path $pluginRoot ("package-" + $plugin.Output)
     if (Test-Path -LiteralPath $stagingDir) {
         Remove-Item -LiteralPath $stagingDir -Recurse -Force
     }
     New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
-    $packageExe = Join-Path $stagingDir $spec.Executable
+    $packageExe = Join-Path $stagingDir $pluginExe
     Copy-Item -LiteralPath $source -Destination $packageExe -Force
     $manifest | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath (Join-Path $stagingDir "manifest.json") -Encoding utf8NoBOM
-    $archive = Join-Path $packagesDir $spec.Package
+    $archive = Join-Path $packagesDir $packageName
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = [System.IO.Compression.ZipFile]::Open(
@@ -218,7 +232,7 @@ foreach ($spec in $pluginSpecs) {
         [System.IO.Compression.ZipArchiveMode]::Create
     )
     try {
-        foreach ($name in @("manifest.json", $spec.Executable)) {
+        foreach ($name in @("manifest.json", $pluginExe)) {
             [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
                 $zip,
                 (Join-Path $stagingDir $name),
@@ -235,10 +249,10 @@ foreach ($spec in $pluginSpecs) {
         definition = $definition
         platform = $Platform
         protocolVersion = 2
-        author = $spec.Author
-        homepage = $spec.Homepage
+        author = $plugin.Author
+        homepage = $plugin.Homepage
         license = "MIT"
-        downloadUrl = "packages/$($spec.Package)"
+        downloadUrl = "packages/$packageName"
         sha256 = $hash
         size = $size
         compatible = $true

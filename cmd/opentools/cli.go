@@ -14,10 +14,10 @@ import (
 	"syscall"
 	"time"
 
-	"opentools/internal/appdata"
-	"opentools/internal/appkit"
-	"opentools/internal/tasks"
-	"opentools/pkg/tool"
+	"github.com/cn-maul/OpenTools/internal/appdata"
+	"github.com/cn-maul/OpenTools/internal/appkit"
+	"github.com/cn-maul/OpenTools/internal/tasks"
+	"github.com/cn-maul/OpenTools/pkg/tool"
 )
 
 // runCLI returns handled=false for a normal desktop launch.
@@ -97,7 +97,11 @@ func listTools() error {
 	defer closeApp()
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
-	return encoder.Encode(app.Service.Tools())
+	tools := app.Service.Tools()
+	if tools == nil {
+		tools = []tool.Definition{}
+	}
+	return encoder.Encode(tools)
 }
 
 func listJobs(args []string) error {

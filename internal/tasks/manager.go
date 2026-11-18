@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"opentools/pkg/tool"
+	"github.com/cn-maul/OpenTools/pkg/tool"
 )
 
 // Manager runs tools independently of any window or HTTP request.

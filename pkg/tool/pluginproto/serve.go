@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"opentools/pkg/tool"
+	"github.com/cn-maul/OpenTools/pkg/tool"
 )
 
 // Serve runs the command-line contract for a downloadable tool executable.

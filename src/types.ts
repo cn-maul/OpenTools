@@ -144,6 +144,7 @@ export interface ToolDefinition {
   keywords?: string[];
   version: string;
   effects?: string[];
+  layout?: string;
   input: UISchema;
 }
 

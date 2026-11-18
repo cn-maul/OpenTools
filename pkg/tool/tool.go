@@ -37,10 +37,19 @@ type Definition struct {
 	Summary     string   `json:"summary"`
 	Description string   `json:"description,omitempty"`
 	Category    string   `json:"category"`
+	// Icon is optional and fully self-describing: "svg:<path>|<path>" holds
+	// one or more SVG path definitions rendered by the host in a 24x24
+	// viewBox. Any other value renders a letter mark, so tools never rely on
+	// host-side icon tables.
 	Icon        string   `json:"icon,omitempty"`
 	Keywords    []string `json:"keywords,omitempty"`
 	Version     string   `json:"version"`
 	Effects     []Effect `json:"effects,omitempty"`
+	// Layout selects how the host groups a tool's result sections. "tabs"
+	// puts them behind a tab strip instead of stacking every section; any
+	// other value keeps the default stacked view. Tools own this choice so
+	// the host never needs a table of tool IDs.
+	Layout string `json:"layout,omitempty"`
 	Input       Schema   `json:"input"`
 }
 

@@ -10,11 +10,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"opentools/internal/application"
-	"opentools/internal/catalog"
-	"opentools/internal/plugins"
-	"opentools/internal/storage/sqlite"
-	"opentools/internal/tasks"
+	"github.com/cn-maul/OpenTools/internal/application"
+	"github.com/cn-maul/OpenTools/internal/catalog"
+	"github.com/cn-maul/OpenTools/internal/plugins"
+	"github.com/cn-maul/OpenTools/internal/storage/sqlite"
+	"github.com/cn-maul/OpenTools/internal/tasks"
 )
 
 // App is the assembled application and the resources that outlive each UI

@@ -12,9 +12,9 @@ import (
 
 	"github.com/egoist/mygo"
 
-	"opentools/internal/appdata"
-	"opentools/internal/appkit"
-	"opentools/internal/desktop"
+	"github.com/cn-maul/OpenTools/internal/appdata"
+	"github.com/cn-maul/OpenTools/internal/appkit"
+	"github.com/cn-maul/OpenTools/internal/desktop"
 )
 
 const version = "0.3.3"

@@ -20,8 +20,8 @@ import (
 	"sync"
 	"time"
 
-	"opentools/pkg/tool"
-	"opentools/pkg/tool/pluginproto"
+	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/pkg/tool/pluginproto"
 )
 
 const (

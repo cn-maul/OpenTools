@@ -24,8 +24,6 @@ type ResultViewProps = {
   onAction: (action: ResultAction) => void;
 };
 
-const TABBED_TOOLS = new Set(["system.crash-diagnostics"]);
-
 function statusLabel(status: string) {
   return (
     {
@@ -87,23 +85,6 @@ function gridLegend(block: Block): StatusLegendItem[] {
 function gridLabeled(block: Block): boolean {
   const data = block.data as { labeled?: unknown } | undefined;
   return data?.labeled === true;
-}
-
-function shortSectionTitle(toolID: string | undefined, section: ResultSection) {
-  return (
-    {
-      overview: "概览",
-      pressure: "资源压力",
-      processes: "占用排行",
-      disks: "分区空间",
-      bugchecks: "蓝屏",
-      unexpected: "异常关机",
-      dumps: "转储文件",
-      registry: "注册表",
-      tasks: "计划任务",
-      services: "服务",
-    }[section.id] ?? section.title
-  );
 }
 
 function sectionRows(section: ResultSection) {
@@ -205,7 +186,7 @@ export default function ResultView({ job, tool, onAction }: ResultViewProps) {
 
   const sections = useMemo(() => job?.sections ?? [], [job?.sections]);
   const stacked = sections.length > 2;
-  const tabbed = Boolean(tool?.id && TABBED_TOOLS.has(tool.id)) && sections.length > 1;
+  const tabbed = tool?.layout === "tabs" && sections.length > 1;
   const shownSections = tabbed
     ? sections.filter((section) => section.id === selectedSectionID)
     : sections;
@@ -432,7 +413,7 @@ export default function ResultView({ job, tool, onAction }: ResultViewProps) {
                         onClick={() => setSelectedSectionID(section.id)}
                       >
                         <span className="app-result-tab-state" />
-                        <span>{shortSectionTitle(tool?.id, section)}</span>
+                        <span>{section.title}</span>
                         {sectionRows(section) > 0 && (
                           <span className="app-result-tab-count">{sectionRows(section)}</span>
                         )}

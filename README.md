@@ -1,10 +1,13 @@
 # OpenTools
 
-OpenTools 是一个用 Go 编写的桌面工具框架和插件管理器。界面使用 Vue 3，通过 MyGo WebView 渲染；桌面应用和 CLI 共享同一套应用服务。
+OpenTools 是一个用 Go 编写的桌面工具框架和插件管理器。界面使用 React + Tailwind +
+HeroUI 3，通过 MyGo WebView 渲染；桌面应用和 CLI 共享同一套应用服务。
 
 桌面窗口使用自绘标题栏，包含最小化、最大化/还原和关闭按钮。主程序版本号显示在应用名旁边；每个工具在自己的标题栏中带有独立版本号。
 
-核心不内置任何业务工具。下载安装的工具是独立的可执行文件，宿主从插件目录发现它们；安装或卸载工具不需要重新编译宿主。
+核心仓库只包含框架，**不包含任何业务工具**。工具统一放在
+[opentool-kit](https://github.com/cn-maul/opentool-kit) 仓库，编译为独立的可执行文件；
+宿主从插件目录发现它们，安装或卸载工具都不需要重新编译宿主。
 
 ## 架构
 
@@ -18,12 +21,12 @@ MyGo / CLI
                 -> SQLite
     -> pkg/tool                  仅依赖标准库的工具契约
         -> pkg/tool/pluginproto  带版本号的 JSON-RPC 2.0 进程协议
-    -> tools/*                   独立编译的插件二进制源码
+    -> （工具源码不在本仓库）     见 opentool-kit
 ```
 
 关键边界：
 
-- `pkg/tool` 永远不导入 Vue、MyGo、SQLite 或应用状态。
+- `pkg/tool` 永远不导入 React、MyGo、SQLite 或应用状态。
 - `internal/appkit` 不导入任何业务工具包，只扫描插件目录并注册轻量进程适配器。
 - `internal/application` 由桌面端和 CLI 共享。
 - `internal/desktop` 是唯一知道 MyGo 的包。
@@ -48,14 +51,15 @@ data\plugins\<tool-id>\
 
 ## 开发一个可下载工具
 
-1. 创建 `tools/<name>/tool.go` 并实现 `tool.Tool` 接口。
+1. 在 **opentool-kit** 仓库创建 `tools/<name>/tool.go` 并实现 `tool.Tool` 接口。
 2. 使用稳定的工具 ID，并声明所有对外可见的能力（effects）。
 3. 在执行耗时或有副作用的操作前后检查 `ctx`。
 4. 返回非空摘要，且只使用支持的结果区块类型。
 5. 在 `cmd/plugins/<name>` 下添加 `pluginproto.Serve(tool)` 可执行入口。
-6. 发布包含 `manifest.json` 和可执行文件的 ZIP，然后将其 SHA256 和相对下载地址写入 `store/catalog.json`。
+6. 在 `tools/plugins.json` 登记，然后运行 `publish-store.ps1` 生成 ZIP 与 `catalog.json`。
 
-`build.ps1` 会构建全部插件并在输出目录生成完整的本地商店。该目录可以由任意静态 HTTP 服务器托管，开发时也可以直接使用。
+`build.ps1` 只构建框架。默认会读取同级 `opentool-kit` 仓库的插件清单，把工具一起打进
+输出目录的本地商店；用 `-CoreOnly` 则只产出不含任何工具的框架。
 
 输入 Schema 有意只支持 JSON Schema 的一个小子集：对象、字符串、数字、整数、布尔、数组、默认值、枚举、取值范围和 UI 提示。这保证了表单生成和 CLI 解析的确定性；将来如果扩展 Schema，工具也可以自行解码更复杂的值。
 
@@ -81,7 +85,11 @@ go tool mygo build -platform windows/amd64
 ./build.ps1
 ```
 
-脚本会执行检查、编译核心与全部插件、生成插件 ZIP 和 `store/catalog.json`，然后把核心程序和安装包复制到 `release/<platform>-<version>/` 下带时间戳的新目录。`BUILD.txt` 记录平台、构建时间和可执行文件 SHA256。迭代时可用 `-SkipChecks` 跳过检查，用 `-Platform` 选择其他目标平台。
+脚本会执行检查、编译核心，再从同级 `opentool-kit` 构建插件、生成插件 ZIP 和
+`store/catalog.json`，然后把核心程序和安装包复制到 `release/<platform>-<version>/`
+下带时间戳的新目录。`BUILD.txt` 记录平台、构建时间和可执行文件 SHA256。
+迭代时可用 `-SkipChecks` 跳过检查，用 `-Platform` 选择其他目标平台，
+用 `-CoreOnly` 只构建不含任何工具的框架，用 `-ToolRepository` 指定其他工具仓库。
 
 核心 `OpenTools.exe` 不包含业务工具。参考插件位于 `store/packages/`，按需下载安装。
 
@@ -99,13 +107,16 @@ go run ./cmd/opentools job <job-id>
 
 数据目录默认是 exe 旁边的 `data` 文件夹（便携模式）；该目录不可写时回退到用户配置目录。设置 `OPENTOOLS_DATA_DIR` 可指定任意便携或测试目录。CLI 输出对脚本友好，加 `--json` 可打印最终任务快照。
 
+以下工具章节描述的是 `opentool-kit` 仓库中的插件行为，框架仓库不包含它们的源码。
+
 ## 公文档排版
 
 `document.govdoc-format` 把排版混乱的 `.docx` / `.txt` / `.md` 按《党政机关公文格式》
 GB/T 9704-2012 重排为规范公文，也可以改用通用、论文、报告三套内置格式。
 
-它复用 GovDoc 的转换引擎（`github.com/cn-maul/GovDoc`，通过 `replace` 指向同级的
-`../GovDoc` 源码目录），插件本身只是一层薄适配。核心不变式随引擎一起生效：
+它复用 GovDoc 的转换引擎，引擎已内嵌在插件仓库的
+`tools/govdoc/engine` 下（不依赖 `../GovDoc` 本地目录），插件本身只是一层薄适配。
+核心不变式随引擎一起生效：
 
 - 模型只拿到段落编号并返回章节结构，**从不生成正文**；装配阶段由程序按编号取回原文。
 - 任何文字修改都必须声明为一条带「原文 → 改后 + 理由」的改动；**未声明的改写会让导出被拒绝**，
@@ -193,6 +204,8 @@ Windows 数据采集使用系统自带的 PowerShell 5.1，不依赖 PowerShell 
 
 ## 发布工具到 Gitee 商店
 
+发布脚本在 `opentool-kit` 仓库中，框架仓库不再包含它。
+
 线上商店仓库为 [dogge2333/opentools-store](https://gitee.com/dogge2333/opentools-store)，目录结构：
 
 ```text
@@ -209,8 +222,8 @@ packages\printer-check-1.2.0.zip
 
 只需要改插件源码里的版本常量，然后重新发布：
 
-1. 修改 `tools\<name>\tool.go` 中的 `const version = "x.y.z"`；
-2. 运行发布脚本：
+1. 在 `opentool-kit` 中修改 `tools\<name>\tool.go` 的 `const version = "x.y.z"`；
+2. 在该仓库运行发布脚本：
 
 ```powershell
 $env:OPENTOOLS_GITEE_TOKEN = "<你的 Gitee token>"
@@ -223,13 +236,15 @@ $env:OPENTOOLS_GITEE_TOKEN = "<你的 Gitee token>"
 
 ### 新增工具
 
-1. 在 `tools\<name>` 实现 `tool.Tool`，在 `cmd\plugins\<name>` 加入 `pluginproto.Serve(...)` 入口；
-2. 在 `publish-store.ps1` 的 `$toolSpecs` 里加一行（`Name` + `Executable`）；
+1. 在 `opentool-kit` 的 `tools\<name>` 实现 `tool.Tool`，在 `cmd\plugins\<name>` 加入 `pluginproto.Serve(...)` 入口；
+2. 在 `tools\plugins.json` 里加一行（`name` / `output` / `author` / `homepage`）；
 3. 跑 `publish-store.ps1`。
 
 ### 本地预览
 
-不想上传时加 `-SkipUpload`，脚本只在仓库根目录生成 `store\`，可以直接用 `build.ps1` 或任意静态服务器验证。加 `-SkipBuild` 可以复用上一次编译出的 `build\plugins` 可执行文件。
+不想上传时加 `-SkipUpload`，脚本只在仓库根目录生成 `store\`，可以直接用
+`build.ps1` 或任意静态服务器验证。加 `-SkipBuild` 可以复用上一次编译出的
+`build\plugins` 可执行文件。
 
 发布前建议先做一次离线验证：
 

@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"opentools/internal/catalog"
-	"opentools/internal/plugins"
-	"opentools/internal/tasks"
-	"opentools/pkg/tool"
+	"github.com/cn-maul/OpenTools/internal/catalog"
+	"github.com/cn-maul/OpenTools/internal/plugins"
+	"github.com/cn-maul/OpenTools/internal/tasks"
+	"github.com/cn-maul/OpenTools/pkg/tool"
 )
 
 // Service is the application boundary for every transport.

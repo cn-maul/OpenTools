@@ -5,7 +5,7 @@ package pluginproto
 import (
 	"encoding/json"
 
-	"opentools/pkg/tool"
+	"github.com/cn-maul/OpenTools/pkg/tool"
 )
 
 const (

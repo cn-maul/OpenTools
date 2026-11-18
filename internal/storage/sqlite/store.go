@@ -15,7 +15,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"opentools/internal/tasks"
+	"github.com/cn-maul/OpenTools/internal/tasks"
 )
 
 // Store keeps jobs in a SQLite database with WAL enabled, so the desktop app
