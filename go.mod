@@ -3,11 +3,13 @@ module github.com/cn-maul/OpenTools
 go 1.27.3
 
 require (
-	github.com/cn-maul/rosetta v1.2.1
+	github.com/cn-maul/OpenTools/sdk v0.0.0
 	github.com/egoist/mygo v0.10.0
 	golang.org/x/sys v0.49.0
 	modernc.org/sqlite v1.61.0
 )
+
+replace github.com/cn-maul/OpenTools/sdk => ./sdk
 
 require (
 	github.com/ProtonMail/go-crypto v1.4.1 // indirect

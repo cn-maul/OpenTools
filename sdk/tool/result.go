@@ -2,6 +2,7 @@ package tool
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -14,7 +15,6 @@ const (
 	BlockCode   BlockKind = "code"
 	BlockJSON   BlockKind = "json"
 	BlockTable  BlockKind = "table"
-	BlockDiff   BlockKind = "diff"
 	BlockGrid   BlockKind = "status-grid"
 	BlockMeter  BlockKind = "meter"
 	BlockFacts  BlockKind = "facts"
@@ -36,20 +36,23 @@ type Result struct {
 	Blocks    []Block    `json:"blocks,omitempty"`
 	Artifacts []Artifact `json:"artifacts,omitempty"`
 	Actions   []Action   `json:"actions,omitempty"`
-	Warnings  []string   `json:"warnings,omitempty"`
 }
 
-// Block is one piece of rendered output. Data is only used by BlockJSON.
+// Block is one piece of rendered output. Data carries the structured payload
+// for json, status-grid, meter and facts blocks.
+//
+// Tone is only valid on a notice block. StatusCell, StatusLegendItem,
+// MeterItem and MeterSegment carry their own Tone for partial colouring.
 type Block struct {
-	Kind     BlockKind `json:"kind"`
-	Title    string    `json:"title,omitempty"`
-	Tone     Tone      `json:"tone,omitempty"`
-	Text     string    `json:"text,omitempty"`
-	Language string    `json:"language,omitempty"`
-	Data     any       `json:"data,omitempty"`
-	Columns  []string  `json:"columns,omitempty"`
-	// ColumnWidths optionally assigns a CSS width to each data column.
-	// The renderer appends its own width for the row-action column.
+	Kind    BlockKind `json:"kind"`
+	Title   string    `json:"title,omitempty"`
+	Tone    Tone      `json:"tone,omitempty"`
+	Text    string    `json:"text,omitempty"`
+	Data    any       `json:"data,omitempty"`
+	Columns []string  `json:"columns,omitempty"`
+	// ColumnWidths assigns a width in DIP (device-independent pixels) to
+	// each data column. The renderer appends its own width for the
+	// row-action column. An empty entry lets the table size the column.
 	ColumnWidths []string   `json:"columnWidths,omitempty"`
 	Rows         [][]string `json:"rows,omitempty"`
 	// RowIcons optionally aligns one data-URI icon with each table row.
@@ -67,7 +70,6 @@ type Block struct {
 // BatchAction is one action applied to multiple selected table rows.
 type BatchAction struct {
 	Label string `json:"label"`
-	Tone  Tone   `json:"tone,omitempty"`
 	// Confirm may contain {count}, which the renderer replaces with the
 	// number of selected rows.
 	Confirm  string         `json:"confirm,omitempty"`
@@ -80,15 +82,13 @@ type BatchAction struct {
 // the follow-up invocation with Input, subject to the same schema
 // validation as a normal action.
 type RowAction struct {
-	Label   string         `json:"label"`
-	Tone    Tone           `json:"tone,omitempty"`
-	Confirm string         `json:"confirm,omitempty"`
-	Input   map[string]any `json:"input"`
-	// Variant switches the rendering: "switch" renders a toggle that
-	// reflects On, while "select" renders a compact choice menu.
-	Variant string `json:"variant,omitempty"`
-	On      bool   `json:"on,omitempty"`
-	// Value is the selected option for a select action.
+	Label   string `json:"label"`
+	Confirm string `json:"confirm,omitempty"`
+	// Input is used by a plain button. A choice menu uses the selected
+	// option's Input instead, so this may be nil when Options is set.
+	Input map[string]any `json:"input,omitempty"`
+	// Options turns the action into a compact choice menu. Value is the
+	// currently selected option and must be one of Options.
 	Value   string            `json:"value,omitempty"`
 	Options []RowActionOption `json:"options,omitempty"`
 }
@@ -101,7 +101,7 @@ type RowActionOption struct {
 	Confirm string         `json:"confirm,omitempty"`
 }
 
-// MeterItem is one progress ring or bar. Value is in the unit named by Unit,
+// MeterItem is one progress bar. Value is in the unit named by Unit,
 // normally 0-100 for percentages.
 type MeterItem struct {
 	Label    string         `json:"label"`
@@ -110,7 +110,6 @@ type MeterItem struct {
 	Unit     string         `json:"unit,omitempty"`
 	Detail   string         `json:"detail,omitempty"`
 	Tone     Tone           `json:"tone,omitempty"`
-	Variant  string         `json:"variant,omitempty"`
 	Segments []MeterSegment `json:"segments,omitempty"`
 }
 
@@ -130,19 +129,17 @@ type Fact struct {
 }
 
 // StatusCell is one compact grid cell rendered by the status-grid block.
-// Empty Tone renders as a muted idle state.
+// Empty Tone renders in the muted idle color.
 type StatusCell struct {
-	Label    string `json:"label"`
-	Tone     Tone   `json:"tone,omitempty"`
-	Category string `json:"category,omitempty"`
-	Detail   string `json:"detail,omitempty"`
+	Label  string `json:"label"`
+	Tone   Tone   `json:"tone,omitempty"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // StatusLegendItem maps one tone to a human-readable grid legend label.
 type StatusLegendItem struct {
-	Label    string `json:"label"`
-	Tone     Tone   `json:"tone,omitempty"`
-	Category string `json:"category,omitempty"`
+	Label string `json:"label"`
+	Tone  Tone   `json:"tone,omitempty"`
 }
 
 // Artifact is a file produced in the job's private work directory.
@@ -161,7 +158,6 @@ type Artifact struct {
 // Confirm is displayed before execution and should describe the side effect.
 type Action struct {
 	Label   string         `json:"label"`
-	Tone    Tone           `json:"tone,omitempty"`
 	Input   map[string]any `json:"input"`
 	Confirm string         `json:"confirm,omitempty"`
 }
@@ -182,11 +178,6 @@ func ValidateResult(result Result) error {
 		if action.Input == nil {
 			return fmt.Errorf("result action %d has no input", i)
 		}
-		switch action.Tone {
-		case "", ToneNeutral, ToneSuccess, ToneWarning, ToneDanger:
-		default:
-			return fmt.Errorf("result action %d has unknown tone %q", i, action.Tone)
-		}
 	}
 	return nil
 }
@@ -194,12 +185,42 @@ func ValidateResult(result Result) error {
 func validateBlocks(blocks []Block) error {
 	for i, block := range blocks {
 		switch block.Kind {
-		case BlockText, BlockNotice, BlockCode, BlockJSON, BlockTable, BlockDiff, BlockGrid, BlockMeter, BlockFacts:
+		case BlockText, BlockNotice, BlockCode:
+			if strings.TrimSpace(block.Text) == "" {
+				return fmt.Errorf("result block %d (%s) has no text", i, block.Kind)
+			}
+		case BlockJSON, BlockGrid, BlockMeter, BlockFacts:
+			if block.Data == nil {
+				return fmt.Errorf("result block %d (%s) has no data", i, block.Kind)
+			}
+		case BlockTable:
+			if len(block.Columns) == 0 {
+				return fmt.Errorf("result block %d: table has no columns", i)
+			}
+			for rowIndex, row := range block.Rows {
+				if len(row) != len(block.Columns) {
+					return fmt.Errorf(
+						"result block %d row %d has %d cells, want %d",
+						i, rowIndex, len(row), len(block.Columns),
+					)
+				}
+			}
 		default:
 			return fmt.Errorf("result block %d has unknown kind %q", i, block.Kind)
 		}
+		if block.Tone != "" && block.Kind != BlockNotice {
+			return fmt.Errorf("result block %d: tone is only supported on notice blocks", i)
+		}
 		if len(block.ColumnWidths) > 0 && len(block.ColumnWidths) != len(block.Columns) {
 			return fmt.Errorf("result block %d: column widths must cover every column", i)
+		}
+		for columnIndex, width := range block.ColumnWidths {
+			if !validColumnWidth(width) {
+				return fmt.Errorf(
+					"result block %d column %d: width %q must be a non-negative DIP value such as \"120\" or \"120px\"",
+					i, columnIndex, width,
+				)
+			}
 		}
 		if len(block.RowIcons) > 0 && len(block.RowIcons) != len(block.Rows) {
 			return fmt.Errorf("result block %d: row icons must cover every row", i)
@@ -216,20 +237,13 @@ func validateBlocks(blocks []Block) error {
 					if strings.TrimSpace(action.Label) == "" {
 						return fmt.Errorf("result block %d row %d action %d has no label", i, rowIndex, actionIndex)
 					}
-					switch action.Tone {
-					case "", ToneNeutral, ToneSuccess, ToneWarning, ToneDanger:
-					default:
-						return fmt.Errorf("result block %d row %d action %d has unknown tone %q", i, rowIndex, actionIndex, action.Tone)
-					}
-					switch action.Variant {
-					case "", "switch":
+					if len(action.Options) == 0 {
 						if action.Input == nil {
 							return fmt.Errorf("result block %d row %d action %d has no input", i, rowIndex, actionIndex)
 						}
-					case "select":
-						if len(action.Options) == 0 {
-							return fmt.Errorf("result block %d row %d action %d has no options", i, rowIndex, actionIndex)
-						}
+						continue
+					}
+					if len(action.Options) > 0 {
 						found := false
 						for optionIndex, option := range action.Options {
 							if strings.TrimSpace(option.Label) == "" || strings.TrimSpace(option.Value) == "" {
@@ -242,11 +256,9 @@ func validateBlocks(blocks []Block) error {
 								found = true
 							}
 						}
-						if !found {
+						if action.Value != "" && !found {
 							return fmt.Errorf("result block %d row %d action %d value is not one of its options", i, rowIndex, actionIndex)
 						}
-					default:
-						return fmt.Errorf("result block %d row %d action %d has unknown variant %q", i, rowIndex, actionIndex, action.Variant)
 					}
 				}
 			}
@@ -264,14 +276,19 @@ func validateBlocks(blocks []Block) error {
 			if block.BatchAction.Input == nil {
 				return fmt.Errorf("result block %d: batch action has no input", i)
 			}
-			switch block.BatchAction.Tone {
-			case "", ToneNeutral, ToneSuccess, ToneWarning, ToneDanger:
-			default:
-				return fmt.Errorf("result block %d: batch action has unknown tone %q", i, block.BatchAction.Tone)
+			itemKey := block.BatchAction.ItemKey
+			if itemKey == "" {
+				itemKey = "item"
 			}
 			for rowIndex, actions := range block.RowActions {
 				if len(actions) == 0 {
 					return fmt.Errorf("result block %d row %d: batch action row has no input", i, rowIndex)
+				}
+				if _, ok := actions[0].Input[itemKey]; !ok {
+					return fmt.Errorf(
+						"result block %d row %d: batch action item key %q is missing from the row action input",
+						i, rowIndex, itemKey,
+					)
 				}
 			}
 		}
@@ -282,4 +299,18 @@ func validateBlocks(blocks []Block) error {
 		}
 	}
 	return nil
+}
+
+// validColumnWidth accepts the only width syntax the native table renderer
+// implements: a non-negative DIP number with an optional "px" suffix. CSS units
+// such as "%", "auto" and "em" are rejected so a tool cannot ship a layout
+// that silently collapses to zero width.
+func validColumnWidth(value string) bool {
+	text := strings.TrimSpace(value)
+	if text == "" {
+		return true
+	}
+	text = strings.TrimSpace(strings.TrimSuffix(strings.ToLower(text), "px"))
+	number, err := strconv.ParseFloat(text, 64)
+	return err == nil && number >= 0
 }

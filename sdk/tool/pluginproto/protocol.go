@@ -5,7 +5,7 @@ package pluginproto
 import (
 	"encoding/json"
 
-	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/sdk/tool"
 )
 
 const (
@@ -19,7 +19,12 @@ const (
 	// is independent of the process protocol: a host may keep speaking
 	// protocol 2 while adding fields, capabilities and host services. It only
 	// grows when a field changes meaning or is removed.
-	ContractVersion = 2
+	ContractVersion = 3
+	// MinimumContractVersion is the oldest tool contract this host can run.
+	// Contract 3 removed result fields and changed env.DataDir semantics, so a
+	// tool built against an older contract must be rebuilt instead of failing
+	// later with an unknown result block.
+	MinimumContractVersion = 3
 
 	JSONRPCVersion = "2.0"
 
@@ -49,14 +54,14 @@ const (
 	MethodHostElevate        = "host/elevate"
 )
 
-// Capability names. A tool lists what it needs in Definition.Requires; the
-// host answers with the subset it actually grants.
+// Capability names. The constants alias the contract package so a tool and
+// the host cannot drift on spelling.
 const (
-	CapabilitySecrets = "secrets"
-	CapabilityDialogs = "dialogs"
-	CapabilityConfig  = "config"
-	CapabilityNotify  = "notify"
-	CapabilityElevate = "elevate"
+	CapabilitySecrets = tool.CapabilitySecrets
+	CapabilityDialogs = tool.CapabilityDialogs
+	CapabilityConfig  = tool.CapabilityConfig
+	CapabilityNotify  = tool.CapabilityNotify
+	CapabilityElevate = tool.CapabilityElevate
 )
 
 // SupportsVersion reports whether the host can load and invoke a plugin that
@@ -106,13 +111,15 @@ type InitializeParams struct {
 	ProtocolVersion int    `json:"protocolVersion"`
 	ToolID          string `json:"toolId"`
 	WorkDir         string `json:"workDir"`
-	DataDir         string `json:"dataDir"`
+	// DataDir is the host's private durable directory for this tool. Older
+	// hosts sent the shared OpenTools data root here.
+	DataDir string `json:"dataDir"`
 	// ContractVersion is the host's contract; zero means the host predates
 	// it. A tool may use it to avoid calling a service it cannot rely on.
 	ContractVersion int `json:"contractVersion,omitempty"`
 	// GrantedCapabilities is the subset of Definition.Requires the host
 	// accepts. Absent means "none granted", never "all granted".
-	GrantedCapabilities []string `json:"grantedCapabilities,omitempty"`
+	GrantedCapabilities []tool.Capability `json:"grantedCapabilities,omitempty"`
 	// Limits are the host budgets echoed back in InitializeResult.
 	Limits Limits `json:"limits,omitempty"`
 }
@@ -128,7 +135,7 @@ type InitializeResult struct {
 	// Capabilities is the granted subset of Definition.Requires. A tool must
 	// not call a host service whose capability is missing; the host rejects
 	// it with CodeCapabilityDenied.
-	Capabilities []string `json:"capabilities,omitempty"`
+	Capabilities []tool.Capability `json:"capabilities,omitempty"`
 	// Limits tells the tool what the host enforces, so a tool can split a
 	// large result instead of having it rejected.
 	Limits Limits `json:"limits,omitempty"`

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/sdk/tool"
 )
 
 // Serve runs the command-line contract for a downloadable tool executable.
@@ -33,6 +33,10 @@ func ServeWithHost(implementation tool.Tool, services HostClient) {
 	}
 	switch os.Args[1] {
 	case "describe":
+		if err := tool.ValidateDefinition(implementation.Definition()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		if err := json.NewEncoder(os.Stdout).Encode(implementation.Definition()); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -69,8 +73,14 @@ type session struct {
 	protocol int
 	workDir  string
 	dataDir  string
-	granted  []string
-	limits   tool.Limits
+	granted  []tool.Capability
+	limits   sessionLimits
+}
+
+type sessionLimits struct {
+	maxMessageBytes int64
+	maxJobDuration  time.Duration
+	cancelGrace     time.Duration
 }
 
 // serveState is the mutable state of one stdio session.
@@ -139,11 +149,11 @@ func (s *serveState) onRequest(ctx context.Context, method string, params json.R
 		if err != nil {
 			return nil, err
 		}
-		if session.limits.MaxMessageBytes > 0 {
-			if size, marshalErr := json.Marshal(result); marshalErr == nil && int64(len(size)) > session.limits.MaxMessageBytes {
+		if session.limits.maxMessageBytes > 0 {
+			if size, marshalErr := json.Marshal(result); marshalErr == nil && int64(len(size)) > session.limits.maxMessageBytes {
 				return nil, &RemoteError{
 					Code:    CodeInvalidRequest,
-					Message: fmt.Sprintf("result is %d bytes, above the %d byte limit; split it into sections", len(size), session.limits.MaxMessageBytes),
+					Message: fmt.Sprintf("result is %d bytes, above the %d byte limit; split it into sections", len(size), session.limits.maxMessageBytes),
 				}
 			}
 		}
@@ -196,6 +206,9 @@ func initialize(implementation tool.Tool, params InitializeParams, host *hostBri
 		)
 	}
 	def := implementation.Definition()
+	if err := tool.ValidateDefinition(def); err != nil {
+		return InitializeResult{}, session{}, err
+	}
 	if params.ToolID != "" && params.ToolID != def.ID {
 		return InitializeResult{}, session{}, fmt.Errorf(
 			"tool id mismatch: request %q, executable %q",
@@ -204,7 +217,7 @@ func initialize(implementation tool.Tool, params InitializeParams, host *hostBri
 		)
 	}
 	granted := intersect(def.Requires, params.GrantedCapabilities)
-	host.setGranted(granted, params.Limits)
+	host.setGranted(granted)
 	return InitializeResult{
 		ProtocolVersion: params.ProtocolVersion,
 		ContractVersion: ContractVersion,
@@ -217,10 +230,10 @@ func initialize(implementation tool.Tool, params InitializeParams, host *hostBri
 		workDir:  params.WorkDir,
 		dataDir:  params.DataDir,
 		granted:  granted,
-		limits: tool.Limits{
-			MaxMessageBytes: params.Limits.MaxMessageBytes,
-			MaxJobDuration:  time.Duration(params.Limits.MaxJobDurationMS) * time.Millisecond,
-			CancelGrace:     time.Duration(params.Limits.CancelGraceMS) * time.Millisecond,
+		limits: sessionLimits{
+			maxMessageBytes: params.Limits.MaxMessageBytes,
+			maxJobDuration:  time.Duration(params.Limits.MaxJobDurationMS) * time.Millisecond,
+			cancelGrace:     time.Duration(params.Limits.CancelGraceMS) * time.Millisecond,
 		},
 	}, nil
 }
@@ -235,8 +248,8 @@ func (s *serveState) runOnce(current session, raw json.RawMessage) (tool.Result,
 		params.Input = map[string]any{}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	if current.limits.MaxJobDuration > 0 {
-		ctx, cancel = context.WithTimeout(ctx, current.limits.MaxJobDuration)
+	if current.limits.maxJobDuration > 0 {
+		ctx, cancel = context.WithTimeout(ctx, current.limits.maxJobDuration)
 	}
 	s.mu.Lock()
 	s.cancelRun = cancel
@@ -318,15 +331,15 @@ func (r processReporter) notify(method string, params any) error {
 	return r.conn.Notify(method, params)
 }
 
-func intersect(required, granted []string) []string {
+func intersect(required, granted []tool.Capability) []tool.Capability {
 	if len(required) == 0 {
 		return nil
 	}
-	available := make(map[string]struct{}, len(granted))
+	available := make(map[tool.Capability]struct{}, len(granted))
 	for _, name := range granted {
 		available[name] = struct{}{}
 	}
-	out := make([]string, 0, len(required))
+	out := make([]tool.Capability, 0, len(required))
 	for _, name := range required {
 		if _, ok := available[name]; ok {
 			out = append(out, name)

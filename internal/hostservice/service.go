@@ -16,8 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cn-maul/OpenTools/pkg/tool"
-	"github.com/cn-maul/OpenTools/pkg/tool/pluginproto"
+	"github.com/cn-maul/OpenTools/sdk/tool"
+	"github.com/cn-maul/OpenTools/sdk/tool/pluginproto"
 )
 
 // UI is the set of native interactions the host exposes. The desktop adapter
@@ -43,7 +43,7 @@ type Service struct {
 	// granted maps tool ID to the capabilities its definition declared.
 	// The transport already enforces this; repeating it here keeps the
 	// dispatcher safe if it is called directly.
-	required func(toolID string) ([]string, bool)
+	required func(toolID string) ([]tool.Capability, bool)
 }
 
 // Options configures a Service.
@@ -53,7 +53,7 @@ type Options struct {
 	Logger  *slog.Logger
 	// Required returns the capabilities a tool declared, and whether the
 	// tool is installed.
-	Required func(toolID string) ([]string, bool)
+	Required func(toolID string) ([]tool.Capability, bool)
 }
 
 // New returns a host service dispatcher.
@@ -73,8 +73,8 @@ func New(options Options) *Service {
 // Capabilities lists the services this host actually implements. A tool only
 // receives the intersection of this list and its own Definition.Requires, so
 // declaring a capability the host lacks fails at the call, not at install.
-func (s *Service) Capabilities() []string {
-	names := []string{
+func (s *Service) Capabilities() []tool.Capability {
+	names := []tool.Capability{
 		pluginproto.CapabilitySecrets,
 		pluginproto.CapabilityConfig,
 	}
@@ -256,7 +256,7 @@ func (s *Service) Handle(ctx context.Context, toolID, method string, params json
 	return nil, &pluginproto.RemoteError{Code: pluginproto.CodeMethodNotFound, Message: "unhandled host method"}
 }
 
-func (s *Service) allows(toolID, capability string) bool {
+func (s *Service) allows(toolID string, capability tool.Capability) bool {
 	if s.required == nil {
 		return false
 	}

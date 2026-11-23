@@ -4,7 +4,7 @@ package tasks
 import (
 	"time"
 
-	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/sdk/tool"
 )
 
 // Status is the lifecycle state of a job.

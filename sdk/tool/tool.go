@@ -13,29 +13,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
-)
-
-// Version is the current OpenTools tool contract version.
-const Version = 1
-
-// Effect describes an externally observable capability of a tool.
-type Effect string
-
-const (
-	EffectReadFiles      Effect = "read-files"
-	EffectWriteFiles     Effect = "write-files"
-	EffectDeleteFiles    Effect = "delete-files"
-	EffectNetwork        Effect = "network"
-	EffectSecrets        Effect = "secrets"
-	EffectSystemSettings Effect = "system-settings"
 )
 
 // Definition is the stable, serializable description of a tool.
 type Definition struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Summary     string `json:"summary"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Summary string `json:"summary"`
+	// Description is the long form shown in a tooltip, while Summary is the
+	// single line rendered in the sidebar and header.
 	Description string `json:"description,omitempty"`
 	Category    string `json:"category"`
 	// Icon is optional and fully self-describing: "svg:<path>|<path>" holds
@@ -45,7 +31,6 @@ type Definition struct {
 	Icon     string   `json:"icon,omitempty"`
 	Keywords []string `json:"keywords,omitempty"`
 	Version  string   `json:"version"`
-	Effects  []Effect `json:"effects,omitempty"`
 	// Layout selects how the host groups a tool's result sections. "tabs"
 	// puts them behind a tab strip instead of stacking every section; any
 	// other value keeps the default stacked view. Tools own this choice so
@@ -53,11 +38,24 @@ type Definition struct {
 	Layout string `json:"layout,omitempty"`
 	// Requires lists the host services the tool calls. The host grants the
 	// intersection of this list and what it implements; a call to anything
-	// else is rejected. Values are pluginproto.Capability* constants; the
-	// strings are duplicated here so this package stays dependency-free.
-	Requires []string `json:"requires,omitempty"`
-	Input    Schema   `json:"input"`
+	// else is rejected.
+	Requires []Capability `json:"requires,omitempty"`
+	Input    Schema       `json:"input"`
+	// TimeoutSeconds caps one invocation. Zero means no tool-specific limit;
+	// the host may still apply its own budget.
+	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
 }
+
+// Capability names one host service a tool may request.
+type Capability string
+
+const (
+	CapabilitySecrets Capability = "secrets"
+	CapabilityConfig  Capability = "config"
+	CapabilityDialogs Capability = "dialogs"
+	CapabilityNotify  Capability = "notify"
+	CapabilityElevate Capability = "elevate"
+)
 
 // Input holds the JSON-shaped arguments of one invocation.
 type Input struct {
@@ -81,12 +79,14 @@ func (in Input) Decode(dst any) error {
 // No GUI or global application state is exposed. Additional capabilities
 // should be added here only when more than one tool needs them.
 type Environment struct {
-	// WorkDir is a private, persistent directory for this invocation.
-	// Artifacts returned by the tool must be written below it.
+	// WorkDir is a private directory for this invocation. It is removed with
+	// the job history, so it is not durable storage. Artifacts returned by the
+	// tool must be written below it.
 	WorkDir string
 
-	// DataDir is the per-user OpenTools data directory. Tools should use it
-	// only for small, durable state that must outlive one job.
+	// DataDir is a private, per-tool directory that survives across jobs.
+	// Use it only for small, durable state; secrets and settings belong in
+	// the host services.
 	DataDir string
 
 	// Host answers host service calls. It is nil when the tool runs without
@@ -95,30 +95,16 @@ type Environment struct {
 	Host Host
 }
 
-// Limits are the budgets the host enforces for one invocation.
-type Limits struct {
-	// MaxMessageBytes caps one protocol message in either direction.
-	MaxMessageBytes int64
-	// MaxJobDuration is the wall-clock budget; zero means unlimited.
-	MaxJobDuration time.Duration
-	// CancelGrace is the delay between a cancellation request and forced
-	// termination of the process.
-	CancelGrace time.Duration
-}
-
 // Host is the tool-side view of the host services granted to this run.
 //
 // Call is the only primitive: it sends a host/* request and decodes the
-// result. Typed helpers live in github.com/cn-maul/OpenTools/pkg/tool/host.
+// result. Typed helpers live in github.com/cn-maul/OpenTools/sdk/tool/host.
 // A call for a capability the host did not grant fails with
 // pluginproto.CodeCapabilityDenied.
 type Host interface {
 	Call(ctx context.Context, method string, params, result any) error
-	// Capabilities lists the granted capability names.
-	Capabilities() []string
 	// Granted reports whether one capability is available.
-	Granted(capability string) bool
-	Limits() Limits
+	Granted(capability Capability) bool
 }
 
 // HostServices is the host-side dispatch point for tool-initiated calls.
@@ -128,6 +114,14 @@ type Host interface {
 // changing the plugin protocol or this package.
 type HostServices interface {
 	Handle(ctx context.Context, toolID, method string, params json.RawMessage) (any, error)
+}
+
+// CapabilityProvider is implemented by host-service dispatchers that can
+// report the capabilities they actually serve. Host process adapters use it
+// to grant tools only the intersection of what they declare and what the
+// host implements. Dispatchers without this interface grant nothing.
+type CapabilityProvider interface {
+	Capabilities() []Capability
 }
 
 // ElevateRequest describes one command a tool asks the host to run with
@@ -176,7 +170,6 @@ type Section struct {
 	ID     string       `json:"id"`
 	Title  string       `json:"title"`
 	State  SectionState `json:"state"`
-	Text   string       `json:"text,omitempty"`
 	Blocks []Block      `json:"blocks,omitempty"`
 }
 
@@ -194,7 +187,7 @@ func ValidateSection(section Section) error {
 		return fmt.Errorf("result section %q has unknown state %q", section.ID, section.State)
 	}
 	if section.State == SectionReady {
-		if len(section.Blocks) == 0 && strings.TrimSpace(section.Text) == "" {
+		if len(section.Blocks) == 0 {
 			return fmt.Errorf("result section %q is ready but has no content", section.ID)
 		}
 		if err := validateBlocks(section.Blocks); err != nil {
@@ -219,8 +212,15 @@ func ValidateDefinition(def Definition) error {
 	switch {
 	case strings.TrimSpace(def.ID) == "":
 		return errors.New("tool id is required")
+	case !validID(def.ID):
+		return fmt.Errorf(
+			"tool %q: id may only contain lowercase letters, digits, '.', '-' and '_'",
+			def.ID,
+		)
 	case strings.TrimSpace(def.Name) == "":
 		return fmt.Errorf("tool %q: name is required", def.ID)
+	case strings.TrimSpace(def.Summary) == "":
+		return fmt.Errorf("tool %q: summary is required", def.ID)
 	case strings.TrimSpace(def.Category) == "":
 		return fmt.Errorf("tool %q: category is required", def.ID)
 	case strings.TrimSpace(def.Version) == "":
@@ -229,7 +229,39 @@ func ValidateDefinition(def Definition) error {
 	if def.Input.Type != "" && def.Input.Type != "object" {
 		return fmt.Errorf("tool %q: top-level input must be an object", def.ID)
 	}
+	if err := ValidateSchema(def.Input); err != nil {
+		return fmt.Errorf("tool %q: %w", def.ID, err)
+	}
+	if def.TimeoutSeconds < 0 {
+		return fmt.Errorf("tool %q: timeout seconds cannot be negative", def.ID)
+	}
+	if def.Layout != "" && def.Layout != "tabs" {
+		return fmt.Errorf("tool %q: layout must be empty or %q", def.ID, "tabs")
+	}
+	for _, capability := range def.Requires {
+		switch capability {
+		case CapabilitySecrets, CapabilityConfig, CapabilityDialogs, CapabilityNotify, CapabilityElevate:
+		default:
+			return fmt.Errorf("tool %q: unknown capability %q", def.ID, capability)
+		}
+	}
 	return nil
+}
+
+func validID(id string) bool {
+	if id == "" || id == "." || id == ".." {
+		return false
+	}
+	for _, char := range id {
+		switch {
+		case char >= 'a' && char <= 'z',
+			char >= '0' && char <= '9',
+			char == '.', char == '-', char == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // ResolveArtifact validates that path is a regular file inside env.WorkDir

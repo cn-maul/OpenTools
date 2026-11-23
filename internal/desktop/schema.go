@@ -9,7 +9,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
-	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/sdk/tool"
 )
 
 // form renders the tool's input schema. The model is the Shell's values map,
@@ -25,9 +25,10 @@ func (s *Shell) form(c *ui.Context, def tool.Definition) {
 	}
 	ui.Column(c).FillWidth().Padding(14).Gap(12).Radius(10).
 		Background(t.Surface).Border(1, t.Border).Children(func() {
-		ui.Row(c).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "输入").FontSize(11).Bold().TextColor(t.TextMuted).Grow(1)
-			ui.Text(c, "必填项会在运行前校验").FontSize(10.5).TextColor(t.TextMuted)
+			ui.Text(c, "*").FontSize(10.5).Bold().TextColor(t.Danger)
+			ui.Text(c, "必填").FontSize(10.5).TextColor(t.TextMuted)
 		})
 		ui.Grid(c).Columns(columns).GapX(14).GapY(10).Children(func() {
 			s.formFields(c, def.Input, s.values, "", columns, 0)
@@ -53,7 +54,7 @@ func (s *Shell) formFields(c *ui.Context, schema tool.Schema, model map[string]a
 	}
 	for _, name := range names {
 		child := schema.Properties[name]
-		if child == nil || !visibleField(*child, model) {
+		if child == nil || !tool.FieldVisible(*child, model) {
 			continue
 		}
 		path := name
@@ -339,27 +340,6 @@ func (s *Shell) arrayField(c *ui.Context, schema tool.Schema, value any, path, l
 	if message := s.arrayErrors[path]; message != "" {
 		ui.Text(c, message).FontSize(10.5).TextColor(t.Danger)
 	}
-}
-
-func visibleField(schema tool.Schema, model map[string]any) bool {
-	if schema.UI == nil || schema.UI.VisibleWhen == nil {
-		return true
-	}
-	condition := schema.UI.VisibleWhen
-	value := model[condition.Field]
-	if len(condition.In) > 0 {
-		text := fmt.Sprint(value)
-		for _, allowed := range condition.In {
-			if text == allowed {
-				return true
-			}
-		}
-		return false
-	}
-	if condition.Equals != nil {
-		return fmt.Sprint(value) == fmt.Sprint(condition.Equals)
-	}
-	return true
 }
 
 func numberValue(value any) float64 {

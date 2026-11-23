@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/sdk/tool"
 )
 
 // Manager runs tools independently of any window or HTTP request.
@@ -26,6 +26,13 @@ type Manager struct {
 	ctx    context.Context
 	stop   context.CancelFunc
 	wg     sync.WaitGroup
+	// dataDir is the root of per-tool durable state. It is deliberately
+	// separate from root (jobs), which is wiped on exit.
+	dataDir string
+	// clearOnClose controls whether closing the manager also deletes job
+	// history. Read-only transports (the CLI's query commands) must leave it
+	// alone: they share the database with a running desktop instance.
+	clearOnClose bool
 
 	mu          sync.RWMutex
 	runs        map[string]*runState
@@ -47,7 +54,18 @@ type runState struct {
 }
 
 // NewManager recovers interrupted jobs and returns a manager.
-func NewManager(ctx context.Context, root string, store Store, logger *slog.Logger) (*Manager, error) {
+//
+// dataDir is the root below which each tool receives its own durable
+// directory. It is deliberately separate from root (jobs), which is wiped on
+// exit. An empty dataDir means tools get no durable directory.
+func NewManager(
+	ctx context.Context,
+	root string,
+	dataDir string,
+	store Store,
+	logger *slog.Logger,
+	clearOnClose bool,
+) (*Manager, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -56,13 +74,15 @@ func NewManager(ctx context.Context, root string, store Store, logger *slog.Logg
 	}
 	managerCtx, stop := context.WithCancel(ctx)
 	m := &Manager{
-		root:        root,
-		store:       store,
-		logger:      logger,
-		ctx:         managerCtx,
-		stop:        stop,
-		runs:        map[string]*runState{},
-		subscribers: map[uint64]chan Event{},
+		root:         root,
+		dataDir:      dataDir,
+		store:        store,
+		logger:       logger,
+		ctx:          managerCtx,
+		stop:         stop,
+		runs:         map[string]*runState{},
+		subscribers:  map[uint64]chan Event{},
+		clearOnClose: clearOnClose,
 	}
 	if err := store.MarkInterrupted(ctx, time.Now().UTC().Add(-staleAfter)); err != nil {
 		stop()
@@ -108,6 +128,9 @@ func (m *Manager) Start(ctx context.Context, t tool.Tool, input, redacted map[st
 		job.Input = input
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
+	if def.TimeoutSeconds > 0 {
+		runCtx, cancel = context.WithTimeout(context.Background(), time.Duration(def.TimeoutSeconds)*time.Second)
+	}
 	run := &runState{
 		job:     job,
 		ctx:     runCtx,
@@ -180,9 +203,10 @@ func (m *Manager) execute(t tool.Tool, run *runState) {
 		run.mu.Lock()
 		liveInput := cloneMap(run.input)
 		run.mu.Unlock()
+		def := t.Definition()
 		result, err := t.Run(run.ctx, tool.Input{Values: liveInput}, tool.Environment{
 			WorkDir: job.WorkDir,
-			DataDir: filepath.Dir(m.root),
+			DataDir: m.toolDataDir(def.ID),
 		}, reporter{run: run})
 		if err != nil {
 			runErr = err
@@ -196,7 +220,8 @@ func (m *Manager) execute(t tool.Tool, run *runState) {
 	}()
 
 	run.mu.Lock()
-	canceled := run.job.Status == StatusCanceling || run.ctx.Err() != nil
+	canceling := run.job.Status == StatusCanceling
+	ctxErr := run.ctx.Err()
 	run.mu.Unlock()
 	run.cancel()
 	finished := time.Now().UTC()
@@ -205,7 +230,12 @@ func (m *Manager) execute(t tool.Tool, run *runState) {
 	run.job.Revision++
 	updated := cloneJob(run.job)
 	switch {
-	case canceled || errors.Is(runErr, context.Canceled):
+	case canceling:
+		updated.Status = StatusCanceled
+	case errors.Is(ctxErr, context.DeadlineExceeded) || errors.Is(runErr, context.DeadlineExceeded):
+		updated.Status = StatusFailed
+		updated.Error = fmt.Sprintf("工具执行超过 %d 秒上限", t.Definition().TimeoutSeconds)
+	case errors.Is(runErr, context.Canceled):
 		updated.Status = StatusCanceled
 	case runErr != nil:
 		updated.Status = StatusFailed
@@ -229,6 +259,44 @@ func (m *Manager) execute(t tool.Tool, run *runState) {
 	run.mu.Unlock()
 
 	m.persistAndEmit("job.finished", &job)
+}
+
+// toolDataDir returns the private durable directory for one tool and creates
+// it on first use.
+func (m *Manager) toolDataDir(toolID string) string {
+	m.mu.RLock()
+	root := m.dataDir
+	m.mu.RUnlock()
+	if strings.TrimSpace(root) == "" {
+		return ""
+	}
+	dir := filepath.Join(root, "tools", safeID(toolID), "data")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		m.logger.Warn("create tool data directory", "tool", toolID, "error", err)
+		return ""
+	}
+	return dir
+}
+
+// safeID keeps a tool's data directory below data/tools without allowing
+// separators or traversal. Definition IDs are already validated, but this
+// also covers manifests written by an older host.
+func safeID(id string) string {
+	var builder strings.Builder
+	for _, char := range id {
+		switch {
+		case char >= 'a' && char <= 'z',
+			char >= 'A' && char <= 'Z',
+			char >= '0' && char <= '9',
+			char == '.', char == '-', char == '_':
+			builder.WriteRune(char)
+		}
+	}
+	name := builder.String()
+	if name == "" || name == "." || name == ".." {
+		return "_"
+	}
+	return name
 }
 
 func normalizeArtifacts(job *Job) error {
@@ -374,7 +442,39 @@ func (m *Manager) Close() error {
 			return errors.New("timed out waiting for jobs to stop")
 		}
 	}
+	if !m.clearOnClose {
+		return nil
+	}
 	return m.clearHistory(context.Background())
+}
+
+// HasActive reports whether the tool has a job in flight in this process or
+// in another OpenTools process sharing the database.
+func (m *Manager) HasActive(ctx context.Context, toolID string) (bool, error) {
+	m.mu.RLock()
+	runs := make([]*runState, 0, len(m.runs))
+	for _, run := range m.runs {
+		runs = append(runs, run)
+	}
+	m.mu.RUnlock()
+	for _, run := range runs {
+		run.mu.Lock()
+		active := run.job.ToolID == toolID && run.job.Status.Active()
+		run.mu.Unlock()
+		if active {
+			return true, nil
+		}
+	}
+	ids, err := m.store.ActiveToolIDs(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		if id == toolID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // clearHistory deletes every job record and its work directory. The desktop

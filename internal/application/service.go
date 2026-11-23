@@ -11,7 +11,8 @@ import (
 	"github.com/cn-maul/OpenTools/internal/catalog"
 	"github.com/cn-maul/OpenTools/internal/plugins"
 	"github.com/cn-maul/OpenTools/internal/tasks"
-	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/sdk/registry"
+	"github.com/cn-maul/OpenTools/sdk/tool"
 )
 
 // Service is the application boundary for every transport.
@@ -41,15 +42,15 @@ func (s *Service) Tool(id string) (tool.Definition, error) {
 }
 
 // Start validates input and starts a detached job.
-func (s *Service) Start(ctx context.Context, toolID string, values map[string]any) (tasks.Job, error) {
+func (s *Service) Start(ctx context.Context, toolID string, values map[string]any) (Job, error) {
 	t, ok := s.catalog.Get(strings.TrimSpace(toolID))
 	if !ok {
-		return tasks.Job{}, fmt.Errorf("tool %q is not installed", toolID)
+		return Job{}, fmt.Errorf("tool %q is not installed", toolID)
 	}
 	def := t.Definition()
 	input, err := tool.Prepare(def.Input, values)
 	if err != nil {
-		return tasks.Job{}, err
+		return Job{}, err
 	}
 	// Persist and display only the redacted form; the tool still receives
 	// the real values.
@@ -58,22 +59,22 @@ func (s *Service) Start(ctx context.Context, toolID string, values map[string]an
 }
 
 // Get returns a job snapshot.
-func (s *Service) Get(ctx context.Context, id string) (tasks.Job, error) {
+func (s *Service) Get(ctx context.Context, id string) (Job, error) {
 	return s.jobs.Get(ctx, id)
 }
 
 // List returns recent jobs.
-func (s *Service) List(ctx context.Context, limit int) ([]tasks.Job, error) {
+func (s *Service) List(ctx context.Context, limit int) ([]Job, error) {
 	return s.jobs.List(ctx, limit)
 }
 
 // Cancel requests cancellation of a running job.
-func (s *Service) Cancel(ctx context.Context, id string) (tasks.Job, error) {
+func (s *Service) Cancel(ctx context.Context, id string) (Job, error) {
 	return s.jobs.Cancel(ctx, id)
 }
 
 // Subscribe streams job updates.
-func (s *Service) Subscribe() (<-chan tasks.Event, func()) {
+func (s *Service) Subscribe() (<-chan Event, func()) {
 	return s.jobs.Subscribe()
 }
 
@@ -98,7 +99,7 @@ func (s *Service) Artifact(ctx context.Context, jobID, name string) (string, err
 }
 
 // PluginStore returns the last known package catalog.
-func (s *Service) PluginStore() tool.StoreSnapshot {
+func (s *Service) PluginStore() registry.StoreSnapshot {
 	return s.plugins.Snapshot()
 }
 
@@ -108,7 +109,7 @@ func (s *Service) PluginStoreURL() string {
 }
 
 // SavePluginStoreURL persists catalog sources and refreshes the store.
-func (s *Service) SavePluginStoreURL(ctx context.Context, value string) (tool.StoreSnapshot, error) {
+func (s *Service) SavePluginStoreURL(ctx context.Context, value string) (registry.StoreSnapshot, error) {
 	if err := s.plugins.SetStoreURL(value); err != nil {
 		return s.plugins.Snapshot(), err
 	}
@@ -117,7 +118,7 @@ func (s *Service) SavePluginStoreURL(ctx context.Context, value string) (tool.St
 
 // RefreshPluginStore fetches configured repositories without disabling
 // already-installed tools when the network is unavailable.
-func (s *Service) RefreshPluginStore(ctx context.Context) (tool.StoreSnapshot, error) {
+func (s *Service) RefreshPluginStore(ctx context.Context) (registry.StoreSnapshot, error) {
 	snapshot, err := s.plugins.Refresh(ctx)
 	if err != nil {
 		return snapshot, err
@@ -129,9 +130,16 @@ func (s *Service) RefreshPluginStore(ctx context.Context) (tool.StoreSnapshot, e
 }
 
 // InstallPlugin installs one package from the current store snapshot.
-func (s *Service) InstallPlugin(ctx context.Context, id string) (tool.StoreSnapshot, error) {
+func (s *Service) InstallPlugin(ctx context.Context, id string) (registry.StoreSnapshot, error) {
 	id = strings.TrimSpace(id)
-	var selected *tool.Package
+	active, err := s.jobs.HasActive(ctx, id)
+	if err != nil {
+		return s.plugins.Snapshot(), err
+	}
+	if active {
+		return s.plugins.Snapshot(), fmt.Errorf("工具 %q 还有任务在运行，请先停止或等待完成", id)
+	}
+	var selected *registry.Package
 	for _, item := range s.plugins.Snapshot().Packages {
 		if item.Definition.ID == id {
 			copy := item
@@ -152,10 +160,17 @@ func (s *Service) InstallPlugin(ctx context.Context, id string) (tool.StoreSnaps
 }
 
 // UninstallPlugin removes a downloaded tool.
-func (s *Service) UninstallPlugin(ctx context.Context, id string) (tool.StoreSnapshot, error) {
+func (s *Service) UninstallPlugin(ctx context.Context, id string) (registry.StoreSnapshot, error) {
 	id = strings.TrimSpace(id)
 	if _, ok := s.plugins.Manifest(id); !ok {
 		return s.plugins.Snapshot(), fmt.Errorf("工具 %q 未安装", id)
+	}
+	active, err := s.jobs.HasActive(ctx, id)
+	if err != nil {
+		return s.plugins.Snapshot(), err
+	}
+	if active {
+		return s.plugins.Snapshot(), fmt.Errorf("工具 %q 还有任务在运行，请先停止或等待完成", id)
 	}
 	if err := s.plugins.Uninstall(id); err != nil {
 		return s.plugins.Snapshot(), err

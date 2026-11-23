@@ -6,9 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
 
-	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/sdk/tool"
 )
 
 // HostClient is the tool-side entry point for host services. The host
@@ -24,51 +23,27 @@ type hostBridge struct {
 	services HostClient
 
 	mu      sync.RWMutex
-	granted map[string]struct{}
-	limits  tool.Limits
+	granted map[tool.Capability]struct{}
 }
 
 func newHostClient(conn *Conn, services HostClient) *hostBridge {
-	return &hostBridge{conn: conn, services: services, granted: map[string]struct{}{}}
+	return &hostBridge{conn: conn, services: services, granted: map[tool.Capability]struct{}{}}
 }
 
-func (b *hostBridge) setGranted(names []string, limits Limits) {
+func (b *hostBridge) setGranted(names []tool.Capability) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.granted = make(map[string]struct{}, len(names))
+	b.granted = make(map[tool.Capability]struct{}, len(names))
 	for _, name := range names {
 		b.granted[name] = struct{}{}
 	}
-	b.limits = tool.Limits{MaxMessageBytes: limits.MaxMessageBytes}
-	if limits.MaxJobDurationMS > 0 {
-		b.limits.MaxJobDuration = time.Duration(limits.MaxJobDurationMS) * time.Millisecond
-	}
-	if limits.CancelGraceMS > 0 {
-		b.limits.CancelGrace = time.Duration(limits.CancelGraceMS) * time.Millisecond
-	}
 }
 
-func (b *hostBridge) Capabilities() []string {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	out := make([]string, 0, len(b.granted))
-	for name := range b.granted {
-		out = append(out, name)
-	}
-	return out
-}
-
-func (b *hostBridge) Granted(capability string) bool {
+func (b *hostBridge) Granted(capability tool.Capability) bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	_, ok := b.granted[capability]
 	return ok
-}
-
-func (b *hostBridge) Limits() tool.Limits {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.limits
 }
 
 // Call implements tool.Host. When a host executable was supplied it takes
@@ -84,7 +59,7 @@ func (b *hostBridge) Call(ctx context.Context, method string, params, result any
 }
 
 // CapabilityFor maps a host method to the capability it requires.
-func CapabilityFor(method string) string {
+func CapabilityFor(method string) tool.Capability {
 	switch method {
 	case MethodHostSecretsGet, MethodHostSecretsSet, MethodHostSecretsDelete:
 		return CapabilitySecrets
@@ -103,7 +78,7 @@ func CapabilityFor(method string) string {
 
 // CheckGranted returns a capability error when the tool calls a service it
 // did not declare.
-func CheckGranted(required []string, method string) error {
+func CheckGranted(required []tool.Capability, method string) error {
 	capability := CapabilityFor(method)
 	if capability == "" {
 		return errors.New("unknown host method " + method)

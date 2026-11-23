@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/sdk/tool"
 )
 
 // Registry is safe for concurrent readers and atomic replacement when

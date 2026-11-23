@@ -16,8 +16,8 @@ import (
 
 	"github.com/cn-maul/OpenTools/internal/appdata"
 	"github.com/cn-maul/OpenTools/internal/appkit"
-	"github.com/cn-maul/OpenTools/internal/tasks"
-	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/internal/application"
+	"github.com/cn-maul/OpenTools/sdk/tool"
 )
 
 // runCLI returns handled=false for a normal desktop launch.
@@ -81,7 +81,7 @@ func openApp(ctx context.Context) (*appkit.App, func(), error) {
 		return nil, func() {}, err
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	app, err := appkit.Open(ctx, dir, logger, nil)
+	app, err := appkit.Open(ctx, dir, logger, appkit.Options{})
 	if err != nil {
 		return nil, func() {}, err
 	}
@@ -130,7 +130,7 @@ func listJobs(args []string) error {
 	return nil
 }
 
-func jobSummary(job tasks.Job) string {
+func jobSummary(job application.Job) string {
 	switch {
 	case job.Result != nil && job.Result.Summary != "":
 		return job.Result.Summary
@@ -239,7 +239,7 @@ func runTool(args []string) error {
 	}
 }
 
-func printLogs(logs []tasks.LogEntry, printed int) int {
+func printLogs(logs []application.LogEntry, printed int) int {
 	if printed < 0 || printed > len(logs) {
 		printed = 0
 	}
@@ -249,12 +249,12 @@ func printLogs(logs []tasks.LogEntry, printed int) int {
 	return len(logs)
 }
 
-func printResult(job tasks.Job, jsonOutput bool) error {
-	if job.Status == tasks.StatusCanceled {
+func printResult(job application.Job, jsonOutput bool) error {
+	if job.Status == application.StatusCanceled {
 		fmt.Fprintln(os.Stderr, "canceled")
 		return context.Canceled
 	}
-	if job.Status == tasks.StatusFailed {
+	if job.Status == application.StatusFailed {
 		return errors.New(job.Error)
 	}
 	if jsonOutput {

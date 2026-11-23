@@ -18,6 +18,8 @@ type Store interface {
 	Heartbeat(context.Context, []string, time.Time) error
 	Get(context.Context, string) (*Job, error)
 	List(context.Context, int) ([]Job, error)
+	// ActiveToolIDs lists tools with a job that is still in flight.
+	ActiveToolIDs(context.Context) ([]string, error)
 	// MarkInterrupted fails active snapshots older than the given heartbeat.
 	MarkInterrupted(context.Context, time.Time) error
 	// Clear deletes every stored job snapshot.

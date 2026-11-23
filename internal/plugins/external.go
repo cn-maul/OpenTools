@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cn-maul/OpenTools/pkg/tool"
-	"github.com/cn-maul/OpenTools/pkg/tool/pluginproto"
+	"github.com/cn-maul/OpenTools/sdk/tool"
+	"github.com/cn-maul/OpenTools/sdk/tool/pluginproto"
 )
 
 const (
@@ -53,8 +53,8 @@ func (t *ExternalTool) Definition() tool.Definition {
 
 // grantedCapabilities is the set the host can actually serve. The tool
 // intersects it with its own Definition.Requires during initialize.
-func (t *ExternalTool) grantedCapabilities() []string {
-	if provider, ok := t.services.(interface{ Capabilities() []string }); ok {
+func (t *ExternalTool) grantedCapabilities() []tool.Capability {
+	if provider, ok := t.services.(tool.CapabilityProvider); ok {
 		return provider.Capabilities()
 	}
 	return nil
@@ -161,8 +161,9 @@ func (t *ExternalTool) Run(
 		DataDir:             env.DataDir,
 		GrantedCapabilities: t.grantedCapabilities(),
 		Limits: pluginproto.Limits{
-			MaxMessageBytes: pluginproto.DefaultMaxMessageBytes,
-			CancelGraceMS:   cancelGrace.Milliseconds(),
+			MaxMessageBytes:  pluginproto.DefaultMaxMessageBytes,
+			MaxJobDurationMS: int64(t.definition.TimeoutSeconds) * 1000,
+			CancelGraceMS:    cancelGrace.Milliseconds(),
 		},
 	}
 	var initialized pluginproto.InitializeResult
@@ -190,6 +191,31 @@ func (t *ExternalTool) Run(
 			initialized.ToolID,
 		)
 	}
+	if initialized.ContractVersion < pluginproto.MinimumContractVersion {
+		kill()
+		<-procDone
+		<-stderrDone
+		return tool.Result{}, fmt.Errorf(
+			"tool %q speaks contract %d, this host requires at least %d; reinstall the tool",
+			t.definition.ID,
+			initialized.ContractVersion,
+			pluginproto.MinimumContractVersion,
+		)
+	}
+	// Zero means the executable predates the contract field. A newer
+	// contract may rely on fields this host does not send, so refuse it
+	// instead of running a tool that silently misbehaves.
+	if initialized.ContractVersion > pluginproto.ContractVersion {
+		kill()
+		<-procDone
+		<-stderrDone
+		return tool.Result{}, fmt.Errorf(
+			"tool %q requires contract %d, this host supports up to %d",
+			t.definition.ID,
+			initialized.ContractVersion,
+			pluginproto.ContractVersion,
+		)
+	}
 
 	var result tool.Result
 	runErr := conn.Request(ctx, pluginproto.MethodRun, pluginproto.RunParams{Input: input.Values}, &result)
@@ -210,6 +236,9 @@ func (t *ExternalTool) Run(
 	waitFor(serveDone, stderrDone)
 	console.flush()
 
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return tool.Result{}, context.DeadlineExceeded
+	}
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return tool.Result{}, context.Canceled
 	}

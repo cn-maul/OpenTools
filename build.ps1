@@ -11,8 +11,9 @@ param(
     [string]$OutRoot = (Join-Path $PSScriptRoot "release"),
 
     # Tool repositories to build plugins from, in order. Each must expose
-    # tools/plugins.json and cmd/plugins/<name>. The repository is expected
-    # to replace github.com/cn-maul/OpenTools with its local checkout.
+    # tools/plugins.json and cmd/plugins/<name>. The repository depends only
+    # on the versioned github.com/cn-maul/OpenTools/sdk module, so building a
+    # plugin never pulls in this host's internal packages.
     [string[]]$ToolRepository = @(),
 
     # Where the primary tool repository lives when it is not a sibling of
@@ -37,6 +38,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = $OutputEncoding
 
 $root = $PSScriptRoot
+$protocolVersion = 2
 $configPath = Join-Path $root "mygo.json"
 if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
     $configPath = Join-Path $root "mygo.config.ts"
@@ -164,6 +166,8 @@ if (-not $SkipChecks) {
     }
     Invoke-Checked { Set-Location $root; go test ./... } "Go checks"
     Invoke-Checked { Set-Location $root; go vet ./... } "Go vet"
+    Invoke-Checked { Set-Location (Join-Path $root "sdk"); go test ./... } "SDK checks"
+    Invoke-Checked { Set-Location (Join-Path $root "sdk"); go vet ./... } "SDK vet"
 }
 
 Invoke-Checked {
@@ -232,7 +236,7 @@ foreach ($plugin in $pluginList) {
     $packageDir = Join-Path $packagesDir $plugin.Output
     $manifest = [ordered]@{
         schemaVersion = 1
-        protocolVersion = 2
+        protocolVersion = $protocolVersion
         platform = $Platform
         executable = $pluginExe
         author = $plugin.Author
@@ -272,7 +276,7 @@ foreach ($plugin in $pluginList) {
     $catalogTools += [ordered]@{
         definition = $definition
         platform = $Platform
-        protocolVersion = 2
+        protocolVersion = $protocolVersion
         author = $plugin.Author
         homepage = $plugin.Homepage
         license = "MIT"

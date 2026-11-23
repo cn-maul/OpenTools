@@ -97,6 +97,29 @@ func (s *Store) Clear(ctx context.Context) error {
 	return nil
 }
 
+// ActiveToolIDs lists tools with a job that has not reached a terminal state.
+func (s *Store) ActiveToolIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT DISTINCT tool_id FROM jobs
+WHERE status IN ('queued', 'running', 'canceling')`)
+	if err != nil {
+		return nil, fmt.Errorf("list active tools: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("list active tools: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list active tools: %w", err)
+	}
+	return ids, nil
+}
+
 // Create inserts a job snapshot.
 func (s *Store) Create(ctx context.Context, job *tasks.Job) error {
 	if job.Revision == 0 {

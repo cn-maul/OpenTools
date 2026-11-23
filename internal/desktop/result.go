@@ -15,11 +15,11 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
-	"github.com/cn-maul/OpenTools/internal/tasks"
-	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/internal/application"
+	"github.com/cn-maul/OpenTools/sdk/tool"
 )
 
-func (s *Shell) result(c *ui.Context, def tool.Definition, job tasks.Job) {
+func (s *Shell) result(c *ui.Context, def tool.Definition, job application.Job) {
 	t := s.theme
 	ui.Column(c).FillWidth().Gap(10).Children(func() {
 		s.resultStatus(c, job)
@@ -39,12 +39,10 @@ func (s *Shell) result(c *ui.Context, def tool.Definition, job tasks.Job) {
 		} else if job.Result != nil {
 			s.blocksResult(c, job, job.Result.Blocks)
 		} else if job.Status.Active() {
-			ui.Column(c).Padding(18).Center().Gap(6).Background(t.Surface).Radius(10).
+			ui.Column(c).Padding(18).Center().Gap(8).Background(t.Surface).Radius(10).
 				Border(1, t.Border).Children(func() {
 				ui.Spinner(c)
-				ui.Text(c, "正在准备结果").FontSize(13).Bold()
-				ui.Text(c, "工具正在执行，结构化输出会随着进度逐块出现。").
-					FontSize(11.5).TextColor(t.TextMuted)
+				ui.Text(c, "正在准备结果…").FontSize(12.5).Bold()
 			})
 		}
 
@@ -64,7 +62,7 @@ func (s *Shell) result(c *ui.Context, def tool.Definition, job tasks.Job) {
 	})
 }
 
-func (s *Shell) resultStatus(c *ui.Context, job tasks.Job) {
+func (s *Shell) resultStatus(c *ui.Context, job application.Job) {
 	t := s.theme
 	ui.Row(c).Children(func() {
 		ui.Text(c, statusLabel(job.Status)).FontSize(11).Bold().TextColor(jobTone(t, job.Status))
@@ -76,19 +74,19 @@ func (s *Shell) resultStatus(c *ui.Context, job tasks.Job) {
 	})
 }
 
-func statusLabel(status tasks.Status) string {
+func statusLabel(status application.Status) string {
 	switch status {
-	case tasks.StatusQueued:
+	case application.StatusQueued:
 		return "排队中"
-	case tasks.StatusRunning:
+	case application.StatusRunning:
 		return "运行中"
-	case tasks.StatusCanceling:
+	case application.StatusCanceling:
 		return "正在停止"
-	case tasks.StatusSucceeded:
+	case application.StatusSucceeded:
 		return "已完成"
-	case tasks.StatusFailed:
+	case application.StatusFailed:
 		return "失败"
-	case tasks.StatusCanceled:
+	case application.StatusCanceled:
 		return "已取消"
 	default:
 		return string(status)
@@ -110,7 +108,7 @@ func sectionStateLabel(state tool.SectionState) string {
 	}
 }
 
-func jobElapsed(job tasks.Job) string {
+func jobElapsed(job application.Job) string {
 	if job.StartedAt == nil {
 		return ""
 	}
@@ -125,7 +123,7 @@ func jobElapsed(job tasks.Job) string {
 	return fmt.Sprintf("%.1f s", elapsed.Seconds())
 }
 
-func (s *Shell) sectionsResult(c *ui.Context, def tool.Definition, job tasks.Job) {
+func (s *Shell) sectionsResult(c *ui.Context, def tool.Definition, job application.Job) {
 	t := s.theme
 	tabbed := def.Layout == "tabs" && len(job.Sections) > 1
 	shown := job.Sections
@@ -160,9 +158,6 @@ func (s *Shell) sectionsResult(c *ui.Context, def tool.Definition, job tasks.Job
 				ui.Text(c, "等待前一步完成。").FontSize(11).TextColor(t.TextMuted)
 				return
 			}
-			if section.Text != "" {
-				ui.Text(c, section.Text).FontSize(11.5).Wrap()
-			}
 			s.blocksResult(c, job, section.Blocks)
 		})
 	}
@@ -181,7 +176,7 @@ func sectionTone(t *ui.Theme, state tool.SectionState) ui.Color {
 	}
 }
 
-func (s *Shell) blocksResult(c *ui.Context, job tasks.Job, blocks []tool.Block) {
+func (s *Shell) blocksResult(c *ui.Context, job application.Job, blocks []tool.Block) {
 	for index, block := range blocks {
 		if block.Title != "" {
 			ui.Text(c, block.Title).FontSize(11).Bold().TextColor(s.theme.TextMuted).Margin(4, 0, 0, 0)
@@ -190,7 +185,7 @@ func (s *Shell) blocksResult(c *ui.Context, job tasks.Job, blocks []tool.Block) 
 	}
 }
 
-func (s *Shell) block(c *ui.Context, job tasks.Job, block tool.Block, index int) {
+func (s *Shell) block(c *ui.Context, job application.Job, block tool.Block, index int) {
 	t := s.theme
 	switch block.Kind {
 	case tool.BlockNotice:
@@ -202,7 +197,7 @@ func (s *Shell) block(c *ui.Context, job tasks.Job, block tool.Block, index int)
 		})
 	case tool.BlockText:
 		ui.Text(c, block.Text).FontSize(11.5).Wrap().Selectable()
-	case tool.BlockCode, tool.BlockJSON, tool.BlockDiff:
+	case tool.BlockCode, tool.BlockJSON:
 		text := block.Text
 		if block.Kind == tool.BlockJSON {
 			data, _ := json.MarshalIndent(block.Data, "", "  ")
@@ -259,7 +254,11 @@ func (s *Shell) statusGrid(c *ui.Context, block tool.Block) {
 			ui.Row(c).Gap(12).Wrap().Children(func() {
 				for _, item := range data.Legend {
 					ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, "●").FontSize(8).TextColor(toneColor(t, item.Tone))
+						colour := toneColor(t, item.Tone)
+						if item.Tone == "" {
+							colour = t.TextMuted
+						}
+						ui.Text(c, "●").FontSize(8).TextColor(colour)
 						ui.Text(c, item.Label).FontSize(10.5).TextColor(t.TextMuted)
 					})
 				}
@@ -268,6 +267,9 @@ func (s *Shell) statusGrid(c *ui.Context, block tool.Block) {
 		ui.Row(c).Gap(3).Wrap().Children(func() {
 			for _, cell := range data.Cells {
 				colour := toneColor(t, cell.Tone)
+				if cell.Tone == "" {
+					colour = t.TextMuted
+				}
 				box := ui.Column(c).Size(18, 18).Center().Radius(4).Background(colour.Alpha(0.85))
 				if data.Labeled {
 					box.Size(72, 34).Padding(3, 5).Gap(0).AlignItems(ui.Start)
@@ -380,7 +382,7 @@ func meterNumber(value float64, unit string) string {
 	return fmt.Sprintf("%.1f%s", value, unit)
 }
 
-func (s *Shell) tableBlock(c *ui.Context, job tasks.Job, block tool.Block, index int) {
+func (s *Shell) tableBlock(c *ui.Context, job application.Job, block tool.Block, index int) {
 	t := s.theme
 	key := fmt.Sprintf("table:%s:%d", job.ID, index)
 	list := s.listState(key)
@@ -549,24 +551,12 @@ func (s *Shell) listState(key string) *ui.ListState {
 	return state
 }
 
-func (s *Shell) rowActions(c *ui.Context, job tasks.Job, key string, row int, actions []tool.RowAction) {
+func (s *Shell) rowActions(c *ui.Context, job application.Job, key string, row int, actions []tool.RowAction) {
 	ui.Row(c).Gap(4).Children(func() {
 		for actionIndex, action := range actions {
 			actionKey := fmt.Sprintf("%s:%d:%d", key, row, actionIndex)
-			switch action.Variant {
-			case "switch":
-				on, ok := s.rowToggles[actionKey]
-				if !ok {
-					on = action.On
-				}
-				sw := ui.Switch(c, &on).Label(action.Label)
-				if sw.Changed() {
-					s.rowToggles[actionKey] = on
-					s.triggerAction(job, tool.Action{
-						Label: action.Label, Tone: action.Tone, Input: action.Input, Confirm: action.Confirm,
-					})
-				}
-			case "select":
+			switch {
+			case len(action.Options) > 0:
 				current, ok := s.rowChoices[actionKey]
 				if !ok {
 					current = action.Value
@@ -620,7 +610,7 @@ func (s *Shell) rowActions(c *ui.Context, job tasks.Job, key string, row int, ac
 			default:
 				if ui.Button(c, action.Label).Clicked() {
 					s.triggerAction(job, tool.Action{
-						Label: action.Label, Tone: action.Tone, Input: action.Input, Confirm: action.Confirm,
+						Label: action.Label, Input: action.Input, Confirm: action.Confirm,
 					})
 				}
 			}
@@ -628,7 +618,7 @@ func (s *Shell) rowActions(c *ui.Context, job tasks.Job, key string, row int, ac
 	})
 }
 
-func (s *Shell) runBatch(job tasks.Job, block tool.Block, selection *ui.Selection[int]) {
+func (s *Shell) runBatch(job application.Job, block tool.Block, selection *ui.Selection[int]) {
 	if block.BatchAction == nil {
 		return
 	}
@@ -664,7 +654,7 @@ func (s *Shell) runBatch(job tasks.Job, block tool.Block, selection *ui.Selectio
 	input[itemsKey] = string(payload)
 	confirm := strings.ReplaceAll(block.BatchAction.Confirm, "{count}", strconv.Itoa(len(items)))
 	s.triggerInput(job, tool.Action{
-		Label: block.BatchAction.Label, Tone: block.BatchAction.Tone,
+		Label: block.BatchAction.Label,
 		Input: input, Confirm: confirm,
 	})
 }
@@ -677,11 +667,11 @@ func sortInts(values []int) {
 	}
 }
 
-func (s *Shell) triggerAction(job tasks.Job, action tool.Action) {
+func (s *Shell) triggerAction(job application.Job, action tool.Action) {
 	s.triggerInput(job, action)
 }
 
-func (s *Shell) triggerInput(job tasks.Job, action tool.Action) {
+func (s *Shell) triggerInput(job application.Job, action tool.Action) {
 	if action.Confirm != "" {
 		open := true
 		s.confirmOpen = &open
@@ -692,7 +682,7 @@ func (s *Shell) triggerInput(job tasks.Job, action tool.Action) {
 	s.runFollowUp(job, action)
 }
 
-func (s *Shell) runFollowUp(job tasks.Job, action tool.Action) {
+func (s *Shell) runFollowUp(job application.Job, action tool.Action) {
 	def, ok := s.toolByID(job.ToolID)
 	if !ok {
 		return
@@ -713,18 +703,9 @@ func (s *Shell) runFollowUp(job tasks.Job, action tool.Action) {
 	s.run(input)
 }
 
-func (s *Shell) resultExtras(c *ui.Context, job tasks.Job) {
+func (s *Shell) resultExtras(c *ui.Context, job application.Job) {
 	t := s.theme
 	result := job.Result
-	if len(result.Warnings) > 0 {
-		for _, warning := range result.Warnings {
-			ui.Row(c).Padding(8, 10).Gap(6).Radius(7).Background(t.Warning.Alpha(0.12)).
-				Border(1, t.Warning.Alpha(0.25)).Children(func() {
-				ui.Text(c, "!").FontSize(11).Bold().TextColor(t.Warning)
-				ui.Text(c, warning).FontSize(11).TextColor(t.Warning).Grow(1).Wrap()
-			})
-		}
-	}
 	if len(result.Artifacts) > 0 {
 		ui.Column(c).Gap(4).Children(func() {
 			ui.Text(c, "产出文件").FontSize(10.5).Bold().TextColor(t.TextMuted)
@@ -771,7 +752,7 @@ func (s *Shell) resultExtras(c *ui.Context, job tasks.Job) {
 	})
 }
 
-func (s *Shell) exportResult(job tasks.Job) {
+func (s *Shell) exportResult(job application.Job) {
 	if job.Result == nil {
 		return
 	}
@@ -816,9 +797,6 @@ func resultText(result *tool.Result, sections []tool.Section) string {
 	parts := []string{result.Summary}
 	for _, section := range sections {
 		parts = append(parts, "", "## "+section.Title)
-		if section.Text != "" {
-			parts = append(parts, section.Text)
-		}
 		parts = appendBlockText(parts, section.Blocks)
 	}
 	parts = appendBlockText(parts, result.Blocks)
@@ -913,7 +891,7 @@ func gridText(data any) []string {
 	return lines
 }
 
-func (s *Shell) logs(c *ui.Context, job tasks.Job) {
+func (s *Shell) logs(c *ui.Context, job application.Job) {
 	t := s.theme
 	ui.Column(c).Gap(4).Children(func() {
 		if ui.ButtonBase(c).FillWidth().Padding(6, 4).Radius(5).Label("活动记录").Children(func() {
@@ -956,7 +934,7 @@ func (s *Shell) syncSections() {
 
 func cssWidth(value string) float32 {
 	value = strings.TrimSpace(value)
-	value = strings.TrimSpace(strings.TrimSuffix(value, "px"))
+	value = strings.TrimSpace(strings.TrimSuffix(strings.ToLower(value), "px"))
 	if value == "" {
 		return 0
 	}

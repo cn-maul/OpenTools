@@ -1,6 +1,6 @@
 //go:build windows
 
-package desktop
+package elevation
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/sdk/tool"
 )
 
 const (

@@ -1,12 +1,12 @@
 //go:build !windows
 
-package desktop
+package elevation
 
 import (
 	"context"
 	"errors"
 
-	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/sdk/tool"
 )
 
 // runElevated is Windows-only. Other platforms have no UAC; a tool that asks

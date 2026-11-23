@@ -9,7 +9,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"github.com/cn-maul/OpenTools/internal/application"
-	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/sdk/registry"
 )
 
 // giteeStoreURL is the catalog used by the one-click preset.
@@ -27,7 +27,7 @@ type settingsWindow struct {
 
 	win *mygo.Window
 	// onSaved receives the fresh store snapshot after a successful save.
-	onSaved func(tool.StoreSnapshot)
+	onSaved func(registry.StoreSnapshot)
 	// value is the draft the user is editing, not the saved catalog list.
 	value   string
 	saved   []string
@@ -42,7 +42,7 @@ type settingsWindow struct {
 
 // openSettingsWindow creates the native settings sheet as a modal child of the
 // main window.
-func openSettingsWindow(parent *mygo.Window, app *application.Service, dataDir, appearance string, onAppearance func(string), onSaved func(tool.StoreSnapshot)) *settingsWindow {
+func openSettingsWindow(parent *mygo.Window, app *application.Service, dataDir, appearance string, onAppearance func(string), onSaved func(registry.StoreSnapshot)) *settingsWindow {
 	settings := &settingsWindow{
 		app:          app,
 		dataDir:      dataDir,

@@ -16,24 +16,35 @@ import (
 	"github.com/cn-maul/OpenTools/internal/plugins"
 	"github.com/cn-maul/OpenTools/internal/storage/sqlite"
 	"github.com/cn-maul/OpenTools/internal/tasks"
+	"github.com/cn-maul/OpenTools/sdk/tool"
 )
 
 // App is the assembled application and the resources that outlive each UI
-// call.
+// call. Transports only use Service; the remaining components are wiring
+// details owned by this package.
 type App struct {
 	Service *application.Service
-	Store   *sqlite.Store
-	Catalog *catalog.Registry
-	Plugins *plugins.Manager
+
+	store   *sqlite.Store
+	catalog *catalog.Registry
+	plugins *plugins.Manager
 	jobs    *tasks.Manager
 }
 
+// Options control assembly for one transport.
+type Options struct {
+	// UI provides the native surfaces tools may request through host
+	// services. A nil UI means a headless assembly (the CLI): secrets and
+	// config still work, dialogs, notifications and elevation are refused.
+	UI hostservice.UI
+	// ClearHistoryOnClose deletes job records and artifacts when the process
+	// exits. Only the desktop shell owns the data directory this way; CLI
+	// queries share it with a running desktop and must preserve history.
+	ClearHistoryOnClose bool
+}
+
 // Open assembles OpenTools using dataDir for the database and job artifacts.
-//
-// ui provides the native surfaces tools may request through host services. A
-// nil ui means a headless assembly (the CLI): secrets and config still work,
-// dialogs, notifications and elevation are refused.
-func Open(ctx context.Context, dataDir string, logger *slog.Logger, ui hostservice.UI) (*App, error) {
+func Open(ctx context.Context, dataDir string, logger *slog.Logger, options Options) (*App, error) {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -61,9 +72,9 @@ func Open(ctx context.Context, dataDir string, logger *slog.Logger, ui hostservi
 
 	services := hostservice.New(hostservice.Options{
 		DataDir: dataDir,
-		UI:      ui,
+		UI:      options.UI,
 		Logger:  logger,
-		Required: func(toolID string) ([]string, bool) {
+		Required: func(toolID string) ([]tool.Capability, bool) {
 			manifest, ok := pluginManager.Manifest(toolID)
 			if !ok {
 				return nil, false
@@ -77,20 +88,27 @@ func Open(ctx context.Context, dataDir string, logger *slog.Logger, ui hostservi
 		return closeOnError(err)
 	}
 
-	jobs, err := tasks.NewManager(ctx, filepath.Join(dataDir, "jobs"), store, logger)
+	jobs, err := tasks.NewManager(
+		ctx,
+		filepath.Join(dataDir, "jobs"),
+		dataDir,
+		store,
+		logger,
+		options.ClearHistoryOnClose,
+	)
 	if err != nil {
 		return closeOnError(err)
 	}
 	return &App{
 		Service: application.New(registry, pluginManager, jobs),
-		Store:   store,
-		Catalog: registry,
-		Plugins: pluginManager,
+		store:   store,
+		catalog: registry,
+		plugins: pluginManager,
 		jobs:    jobs,
 	}, nil
 }
 
 // Close releases durable resources.
 func (a *App) Close() error {
-	return errors.Join(a.jobs.Close(), a.Store.Close())
+	return errors.Join(a.jobs.Close(), a.store.Close())
 }

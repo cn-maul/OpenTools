@@ -13,8 +13,8 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"github.com/cn-maul/OpenTools/internal/application"
-	"github.com/cn-maul/OpenTools/internal/tasks"
-	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/sdk/registry"
+	"github.com/cn-maul/OpenTools/sdk/tool"
 )
 
 const (
@@ -34,7 +34,7 @@ type Shell struct {
 	win *mygo.Window
 
 	tools     []tool.Definition
-	jobs      []tasks.Job
+	jobs      []application.Job
 	tab       int
 	search    string
 	values    map[string]any
@@ -43,7 +43,7 @@ type Shell struct {
 	loading   bool
 	errText   string
 	fieldErr  *tool.FieldError
-	store     tool.StoreSnapshot
+	store     registry.StoreSnapshot
 	storeLoad bool
 	storeBusy string
 	starting  bool
@@ -58,7 +58,6 @@ type Shell struct {
 	arrayErrors  map[string]string
 	icons        map[string]ui.ImageSource
 	batchState   map[string]*ui.Selection[int]
-	rowToggles   map[string]bool
 	rowChoices   map[string]string
 	toastText    string
 	settings     *settingsWindow
@@ -91,7 +90,6 @@ func NewShell(app *application.Service, version, dataDir string) *Shell {
 		arrayErrors: map[string]string{},
 		icons:       map[string]ui.ImageSource{},
 		batchState:  map[string]*ui.Selection[int]{},
-		rowToggles:  map[string]bool{},
 		rowChoices:  map[string]string{},
 	}
 }
@@ -247,7 +245,7 @@ func (s *Shell) events() {
 	}
 }
 
-func (s *Shell) upsertJob(job tasks.Job) {
+func (s *Shell) upsertJob(job application.Job) {
 	for i := range s.jobs {
 		if s.jobs[i].ID == job.ID {
 			s.jobs[i] = job
@@ -257,7 +255,7 @@ func (s *Shell) upsertJob(job tasks.Job) {
 			return
 		}
 	}
-	s.jobs = append([]tasks.Job{job}, s.jobs...)
+	s.jobs = append([]application.Job{job}, s.jobs...)
 }
 
 func (s *Shell) selectTool(id string) {
@@ -289,7 +287,6 @@ func (s *Shell) selectTool(id string) {
 func (s *Shell) resetInputState() {
 	s.arrayDrafts = map[string]string{}
 	s.arrayErrors = map[string]string{}
-	s.rowToggles = map[string]bool{}
 	s.rowChoices = map[string]string{}
 	s.listStates = map[string]*ui.ListState{}
 	s.batchState = map[string]*ui.Selection[int]{}
@@ -310,16 +307,16 @@ func (s *Shell) selectedTool() (tool.Definition, bool) {
 	return s.toolByID(s.selected)
 }
 
-func (s *Shell) selectedJob() (tasks.Job, bool) {
+func (s *Shell) selectedJob() (application.Job, bool) {
 	for _, job := range s.jobs {
 		if job.ID == s.jobID {
 			return job, true
 		}
 	}
-	return tasks.Job{}, false
+	return application.Job{}, false
 }
 
-func (s *Shell) runningJob() (tasks.Job, bool) {
+func (s *Shell) runningJob() (application.Job, bool) {
 	job, ok := s.selectedJob()
 	return job, ok && job.Status.Active()
 }
@@ -332,15 +329,6 @@ func (s *Shell) activeJobs() int {
 		}
 	}
 	return n
-}
-
-func (s *Shell) toolActive(id string) bool {
-	for _, job := range s.jobs {
-		if job.ToolID == id && job.Status.Active() {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Shell) run(input map[string]any) {
@@ -408,7 +396,7 @@ func (s *Shell) loadStore(refresh bool) {
 	s.storeLoad = true
 	s.errText = ""
 	go func() {
-		var snapshot tool.StoreSnapshot
+		var snapshot registry.StoreSnapshot
 		var err error
 		if refresh {
 			snapshot, err = s.app.RefreshPluginStore(context.Background())
@@ -440,10 +428,6 @@ func (s *Shell) install(id string) {
 	if s.storeBusy != "" {
 		return
 	}
-	if s.toolActive(id) {
-		s.errText = "该工具还有任务在运行，请先停止或等待完成。"
-		return
-	}
 	s.storeBusy = id
 	s.errText = ""
 	go func() {
@@ -455,7 +439,7 @@ func (s *Shell) install(id string) {
 				return
 			}
 			s.store = snapshot
-			if def, ok := s.packageDefinition(id, snapshot); ok {
+			if def, err := s.app.Tool(id); err == nil {
 				s.tools = s.app.Tools()
 				s.selectTool(def.ID)
 			} else {
@@ -468,10 +452,6 @@ func (s *Shell) install(id string) {
 
 func (s *Shell) uninstall(id string) {
 	if s.storeBusy != "" {
-		return
-	}
-	if s.toolActive(id) {
-		s.errText = "该工具还有任务在运行，请先停止或等待完成。"
 		return
 	}
 	s.storeBusy = id
@@ -489,16 +469,6 @@ func (s *Shell) uninstall(id string) {
 			s.toast("已卸载 " + id)
 		})
 	}()
-}
-
-// packageDefinition finds the installed tool in the fresh store snapshot.
-func (s *Shell) packageDefinition(id string, snapshot tool.StoreSnapshot) (tool.Definition, bool) {
-	for _, item := range snapshot.Packages {
-		if item.Definition.ID == id && item.Installed {
-			return item.Definition, true
-		}
-	}
-	return tool.Definition{}, false
 }
 
 // reloadTools refreshes the catalog and keeps the selection valid. When the
@@ -727,7 +697,12 @@ func (s *Shell) sidebarList(c *ui.Context) {
 				})
 			}
 			if len(order) == 0 {
-				ui.Text(c, "没有匹配的工具。").FontSize(12).TextColor(t.TextMuted).Padding(8)
+				ui.Column(c).Center().Gap(6).Padding(16).Children(func() {
+					if glyphSearch != nil {
+						ui.Icon(c, glyphSearch).Size(20, 20).TextColor(t.TextMuted)
+					}
+					ui.Text(c, "没有匹配的工具").FontSize(11.5).TextColor(t.TextMuted)
+				})
 			}
 		})
 	})
@@ -738,6 +713,9 @@ func (s *Shell) toolRow(c *ui.Context, def tool.Definition) {
 	selected := def.ID == s.selected
 	row := ui.ButtonBase(c).Key("tool:"+def.ID).FillWidth().Padding(6, 8).Gap(8).AlignItems(ui.Start).
 		Radius(7).Label(def.Name)
+	if def.Description != "" {
+		row.Tooltip(def.Description)
+	}
 	if selected {
 		row.Background(t.Accent.Alpha(0.12))
 	} else if row.Hovered() {
@@ -747,7 +725,10 @@ func (s *Shell) toolRow(c *ui.Context, def tool.Definition) {
 		s.toolGlyph(c, def, 26)
 		ui.Column(c).Grow(1).Gap(1).Children(func() {
 			ui.Text(c, def.Name).FontSize(12.5).Bold().SingleLine()
-			ui.Text(c, def.Summary).FontSize(11).TextColor(t.TextMuted).MaxLines(2).Wrap()
+			summary := ui.Text(c, def.Summary).FontSize(11).TextColor(t.TextMuted).MaxLines(2).Wrap()
+			if def.Description != "" {
+				summary.Tooltip(def.Description)
+			}
 		})
 	})
 	if row.Clicked() {
@@ -774,7 +755,7 @@ func (s *Shell) toolGlyph(c *ui.Context, def tool.Definition, size float32) {
 func (s *Shell) recent(c *ui.Context) {
 	t := s.theme
 	seen := map[string]bool{}
-	rows := []tasks.Job{}
+	rows := []application.Job{}
 	for _, job := range s.jobs {
 		if _, installed := s.toolByID(job.ToolID); !installed {
 			continue
@@ -802,7 +783,7 @@ func (s *Shell) recent(c *ui.Context) {
 	})
 }
 
-func (s *Shell) recentRow(c *ui.Context, job tasks.Job) {
+func (s *Shell) recentRow(c *ui.Context, job application.Job) {
 	t := s.theme
 	name := job.ToolID
 	if def, ok := s.toolByID(job.ToolID); ok {
@@ -825,7 +806,7 @@ func (s *Shell) recentRow(c *ui.Context, job tasks.Job) {
 	}
 }
 
-func (s *Shell) loadJob(job tasks.Job) {
+func (s *Shell) loadJob(job application.Job) {
 	def, ok := s.toolByID(job.ToolID)
 	if !ok {
 		return
@@ -863,13 +844,13 @@ func overlayInput(dst, src map[string]any) {
 	}
 }
 
-func jobTone(t *ui.Theme, status tasks.Status) ui.Color {
+func jobTone(t *ui.Theme, status application.Status) ui.Color {
 	switch status {
-	case tasks.StatusSucceeded:
+	case application.StatusSucceeded:
 		return t.Success
-	case tasks.StatusFailed:
+	case application.StatusFailed:
 		return t.Danger
-	case tasks.StatusRunning, tasks.StatusQueued, tasks.StatusCanceling:
+	case application.StatusRunning, application.StatusQueued, application.StatusCanceling:
 		return t.Accent
 	default:
 		return t.TextMuted
@@ -917,10 +898,19 @@ func (s *Shell) loadingView(c *ui.Context) {
 
 func (s *Shell) emptyView(c *ui.Context) {
 	t := s.theme
-	ui.Column(c).Fill().Center().Gap(10).Children(func() {
-		ui.Text(c, "还没有安装工具").FontSize(20).Bold()
-		ui.Text(c, "OpenTools 核心不内置业务工具。前往工具商店下载后即可使用。").
-			FontSize(12).TextColor(t.TextMuted).Wrap().MaxWidth(420)
+	ui.Column(c).Fill().Center().Gap(16).Children(func() {
+		hero := ui.Row(c).Size(64, 64).Radius(16).Center().Background(t.Accent.Alpha(0.12))
+		if glyphSparkles != nil {
+			hero.Children(func() {
+				ui.Icon(c, glyphSparkles).Size(32, 32).TextColor(t.Accent)
+			})
+		}
+		ui.Text(c, "安装第一个工具").FontSize(20).Bold()
+		guideRow(c, t,
+			guideStep{icon: glyphStore, label: "浏览商店"},
+			guideStep{icon: glyphDownload, label: "一键安装"},
+			guideStep{icon: glyphPlay, label: "立即运行"},
+		)
 		if ui.PrimaryButton(c, "打开工具商店").Clicked() {
 			s.showStore()
 		}
@@ -964,7 +954,10 @@ func (s *Shell) toolHeader(c *ui.Context, def tool.Definition) {
 		s.toolGlyph(c, def, 30)
 		ui.Column(c).Grow(1).Gap(0).Children(func() {
 			ui.Row(c).Gap(7).Children(func() {
-				ui.Text(c, def.Name).FontSize(15).Bold()
+				name := ui.Text(c, def.Name).FontSize(15).Bold()
+				if def.Description != "" {
+					name.Tooltip(def.Description)
+				}
 				ui.Text(c, "v"+def.Version).FontSize(10.5).TextColor(t.TextMuted)
 			})
 			ui.Text(c, def.Summary).FontSize(11.5).TextColor(t.TextMuted).SingleLine()
@@ -980,19 +973,28 @@ func (s *Shell) toolHeader(c *ui.Context, def tool.Definition) {
 			if button.Clicked() {
 				s.runCurrent()
 			}
-			ui.Text(c, "Ctrl ↵").FontSize(10).TextColor(t.TextMuted)
+			ui.Row(c).Gap(3).AlignItems(ui.Center).Children(func() {
+				keyCap(c, t, "Ctrl")
+				keyCap(c, t, "⏎")
+			})
 		}
 	})
 }
 
 func (s *Shell) emptyResult(c *ui.Context) {
 	t := s.theme
-	ui.Column(c).FillWidth().MinHeight(150).Padding(20).Radius(10).Center().Gap(6).
+	ui.Column(c).FillWidth().MinHeight(150).Padding(20).Radius(10).Center().Gap(10).
 		Background(t.Surface).Border(1, t.Border).Children(func() {
+		if glyphDoc != nil {
+			ui.Icon(c, glyphDoc).Size(26, 26).TextColor(t.TextMuted)
+		}
 		ui.Text(c, "结果会显示在这里").FontSize(13).Bold()
-		ui.Text(c, "配置好输入后运行工具，输出、日志与可执行操作会集中显示。").
-			FontSize(11.5).TextColor(t.TextMuted).Wrap().MaxWidth(520)
-		ui.Text(c, "Ctrl + Enter 运行当前工具").FontSize(11).TextColor(t.TextMuted)
+		ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
+			keyCap(c, t, "Ctrl")
+			ui.Text(c, "+").FontSize(10).TextColor(t.TextMuted)
+			keyCap(c, t, "⏎")
+			ui.Text(c, "运行当前工具").FontSize(11).TextColor(t.TextMuted)
+		})
 	})
 }
 
@@ -1082,7 +1084,7 @@ func (s *Shell) openSettings() {
 		return
 	}
 	settings := openSettingsWindow(s.win, s.app, s.dataDir, s.mode, s.setAppearance,
-		func(snapshot tool.StoreSnapshot) {
+		func(snapshot registry.StoreSnapshot) {
 			s.store = snapshot
 			s.storeLoad = false
 			s.tools = s.app.Tools()

@@ -10,8 +10,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/cn-maul/OpenTools/pkg/tool"
-	"github.com/cn-maul/OpenTools/pkg/tool/pluginproto"
+	"github.com/cn-maul/OpenTools/sdk/tool"
+	"github.com/cn-maul/OpenTools/sdk/tool/pluginproto"
 )
 
 // ErrNoHost is returned when a tool tries to use a service while running
@@ -178,7 +178,7 @@ func Elevate(ctx context.Context, env tool.Environment, params tool.ElevateReque
 // capabilityError explains why a host service is unavailable. The two causes
 // need different fixes: declaring the capability in the tool definition, or
 // running in a host that implements it.
-func capabilityError(capability string) error {
+func capabilityError(capability tool.Capability) error {
 	return fmt.Errorf(
 		"host service %q is unavailable: the host did not grant it (declare it in Definition.Requires, and run inside a host that implements it)",
 		capability,

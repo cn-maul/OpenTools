@@ -2,12 +2,12 @@ package desktop
 
 import (
 	"context"
-	"errors"
 	"strings"
 
 	"github.com/egoist/mygo"
 
-	"github.com/cn-maul/OpenTools/pkg/tool"
+	"github.com/cn-maul/OpenTools/internal/elevation"
+	"github.com/cn-maul/OpenTools/sdk/tool"
 )
 
 // NativeUI implements hostservice.UI with the MyGo desktop surfaces.
@@ -64,10 +64,7 @@ func (NativeUI) Notify(ctx context.Context, title, body string) error {
 
 // Elevate runs a command with the Windows administrator token.
 func (NativeUI) Elevate(ctx context.Context, request tool.ElevateRequest) (tool.ElevateResult, error) {
-	if strings.TrimSpace(request.Program) == "" {
-		return tool.ElevateResult{}, errors.New("elevation request has no program")
-	}
-	return runElevated(ctx, request)
+	return elevation.Run(ctx, request)
 }
 
 func filters(extensions []string) []mygo.FileFilter {
